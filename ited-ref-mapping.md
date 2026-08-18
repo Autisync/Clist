@@ -419,6 +419,48 @@ Classe de ligação garantida: TCD-C-M, per Tabela 6.4/6.5's method (6.2.1).
 
 Categoria mínima garantida: OS1a.
 
+#### Tabela 6.1 — Ensaios obrigatórios nas redes PC (p.161) — F11, and why it isn't a numeric-limits table
+
+Read directly from `ManualITED4edicao_2019.pdf`, §6.1/6.1.1 (pp.161–163), while sourcing
+F11 for Phase 3. **This one is structurally different from every other table above, and
+seeding it the same way would be wrong, not just incomplete:**
+
+Tabelas 6.7/6.9/6.12/6.13/6.17 all give ITED-specific numeric pass/fail thresholds
+(dB, dBµV, etc.) that this manual defines itself. Tabela 6.1 does not — for pares de
+cobre, the manual instead lists which EN 50173 Class E link parameters must be tested
+(Return Loss, Insertion Loss, NEXT, PSNEXT, ACR-N/PSACR-N, ACR-F/PSACR-F, propagation
+delay, delay skew, wire map, length) and states the pass/fail evaluation is the
+**cable certifier's own built-in verdict against EN 50173 Class E** — an external
+cabling-certification standard, not an ITED-authored number:
+
+> "Considera-se garantida a classe de ligação quando os valores dos parâmetros medidos
+> se encontram dentro dos limites definidos [...] As indicações de 'Passa/Falha'
+> apresentadas pelos certificadores de cablagem devem ser consideradas para a garantia
+> da classe de ligação." (§6.1.1, p.162)
+
+Two parameters are explicitly informational only, not pass/fail gates (§6.1's footnotes
+1, 2 and 4): return loss and NEXT/PSNEXT below certain insertion-loss thresholds, and
+length, are "meramente informativo."
+
+**Consequence for the schema:** there is no min/max/range number to fabricate here, and
+inventing one to force-fit F11 into the same `dir: range|min|max` shape F13/F14 use would
+mean putting a made-up compliance threshold in front of the same `verified_by` gate that
+exists specifically to prevent that — the opposite of what the gate is for. The correct
+representation is a new `dir` value meaning "no ITED-authored number; outcome is recorded
+directly from the certifying instrument's own displayed verdict" (see
+`06-phase3-compliance.md`'s update for the concrete schema change). `verified_source` for
+this one honestly cites "Manual ITED 4.ª ed., Tabela 6.1/6.1.1, p.161–162 — evaluated
+against EN 50173 Classe E by the certifier's own pass/fail, no ITED-specific numeric
+limit exists" — which is a true, checkable citation, unlike a number that isn't in the
+source.
+
+If a future need arises for the actual EN 50173 Class E frequency-swept numeric curves
+(e.g. to validate a certifier's readout independently rather than trust its verdict),
+that requires the EN 50173 standard itself — a separate, not-freely-available CENELEC
+document, not anything in this repo's sourced PDFs. Not chased further here; the ITED
+manual's own text treats the certifier's verdict as sufficient, and FieldReady's
+technician-facing flow can too.
+
 #### One loose end, not worth chasing further
 
 Page 168's text references "o respetivo limite contido na tabela 6.10" for the via-de-
@@ -429,10 +471,13 @@ Tabelas 6.7/6.9/6.12/6.17 specifically; flagged here only so it doesn't look lik
 in this research if someone goes looking for it later.
 
 **Applied:** `test_protocol` template versions for TT-level coax testing (Tabela 6.12)
-and fibre (Tabela 6.17) are now seeded, verified, and activated in `seed.sql`, citing
-this exact source. The `ited_full` gate (schema `fn_activate_template_version_guard`)
+and fibre (Tabela 6.17) are seeded, verified, and activated in `seed.sql` as of Phase 1,
+citing this exact source. The `ited_full` gate (schema `fn_activate_template_version_guard`)
 is satisfied by real data, not bypassed — see §5 of `02-ARCHITECTURE.md` for how a
 tenant would fork and adjust from here if their own equipment or job types differ.
+F12 (Tabela 6.7/6.9 coax coletiva/individual) is seedable the same way, same page range,
+values already in the table above. F11 needs the `dir` schema extension noted above
+before it can be seeded honestly — tracked as Phase 3 work in `06-phase3-compliance.md`.
 
 ## 7B. Suggested next move
 

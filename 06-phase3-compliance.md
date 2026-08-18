@@ -30,39 +30,60 @@ new work is narrower than the form count (F11–F18, eight items) suggests:
 - **Trivial:** F18 (rótulo) — one boolean/document field on close-out, not worth its own
   section.
 
-## 2. F11/F12 — the one real blocker, and how to not fake it
+## 2. F11/F12 — resolved, but F11 isn't the table it looks like
 
-`CLAUDE.md` is explicit: *"extend `seed.sql`'s pattern for F11 (Tabela 6.1) and F12
-(Tabela 6.4/6.7/6.9) when those get built."* As of this writing those tables haven't been
-read from the source PDF the way Tabelas 6.12/6.17 were on 18 August
-(`ited-ref-mapping.md` §7A.3) — F12's *attenuation/slope* limits are already quoted in
-`forms-and-procedures-spec.md` §3.4 (13,8 dB / 10,8 dB across 47–862 MHz, plus the
-950–2150 MHz satellite-IF figures), which is enough to seed F12 today. **F11's Tabela 6.1
-values are not yet quoted anywhere in this repo's docs** — that is the actual remaining
-gap, not an engineering task.
+`CLAUDE.md` said to extend `seed.sql`'s pattern for F11 (Tabela 6.1) and F12 (Tabela
+6.4/6.7/6.9) "when those get built." Both are now sourced — but reading Tabela 6.1
+directly (`ManualITED4edicao_2019.pdf.pdf`, pp.161–163, `ited-ref-mapping.md` §7A.3's
+new addendum) turned up something the "extend the same pattern" framing didn't
+anticipate: **Tabela 6.1 isn't a numeric-limits table at all.** Unlike Tabelas
+6.7/6.9/6.12/6.13/6.17, which give ITED-specific pass/fail numbers, Tabela 6.1 lists
+which EN 50173 Class E link parameters must be tested (Return Loss, Insertion Loss,
+NEXT, PSNEXT, ACR-N/F, PSACR-N/F, propagation delay, delay skew, wire map, length) and
+states plainly that pass/fail is **the cable certifier's own built-in verdict against
+EN 50173 Class E** — an external cabling standard this manual doesn't restate numerically,
+not an ITED-authored threshold. Forcing that into the existing `dir: range|min|max` shape
+would mean inventing a number to sit behind the `verified_by` gate — exactly what that
+gate exists to prevent.
 
-Do not seed F11 with placeholder or estimated numbers to make a proof script pass. The
-`verified_by`/`verified_source` gate exists specifically to prevent exactly that
-failure mode (schema comment, §4 of `03-schema.sql`) — a fabricated-but-plausible value
-would satisfy the trigger's NOT NULL check while defeating its entire purpose. The correct
-sequence, mirroring 18 August exactly:
+**Schema change required, not just a seed row:** add a fourth `TestProtocolTest.dir`
+value, `external_pass_fail`, meaning "no min/max stored; the technician/certifier's own
+pass/fail verdict is recorded as-is." Concretely:
 
-1. Read Manual ITED 4.ª ed., Tabela 6.1 (method 6.1.1, pares de cobre), from the actual
-   source PDF already in this repo (`ManualITED4edicao_2019.pdf.pdf`) or the alternate
-   edition (`Manual-ITED4-vfinal-atec.pdf.pdf`).
-2. Add the real values to `ited-ref-mapping.md` §7A.3 as a dated addendum, same format as
-   the existing F13/F14 entry.
-3. Add an F11 `test_protocol` template version to `seed.sql`, `verified_by`/
-   `verified_source` set to a real reviewer and page citation, following F13/F14's rows
-   line for line.
-4. Re-run `verify-seed.mjs` — it should pick up F11 automatically since it iterates
-   seeded `test_protocol` versions generically, not by hardcoded name (confirm this
-   before relying on it; if the current script only spot-checks F13/F14 by name, extend
-   its assertions to iterate all seeded `test_protocol` templates rather than adding a
-   third hardcoded block).
+1. `packages/core/src/template.ts`: extend `TestProtocolTest`'s `dir` enum to
+   `["range", "min", "max", "external_pass_fail"]`; update the `.refine` so
+   `external_pass_fail` requires neither `min` nor `max`.
+2. `packages/core/src/test-protocol-eval.ts`'s `evalTest`: add a branch for
+   `dir === "external_pass_fail"` — the "measured value" for this kind of test *is*
+   `"pass"` or `"fail"` (whatever the certifier displayed), so `evalTest` returns that
+   value directly (normalized/validated to `pass`/`fail`/`pending`) rather than computing
+   anything numeric.
+3. Seed F11 in `seed.sql`: one `test_protocol` version, `network_type: "PC"`, one test
+   entry per EN 50173 Class E parameter from Tabela 6.1 (mark length as
+   `mandatory: false` — the manual's own footnote 4 calls it "meramente informativo,"
+   informational only, not a pass/fail gate). `verified_source`: *"Manual ITED 4.ª ed.,
+   Tabela 6.1/6.1.1, p.161–162 — evaluated against EN 50173 Classe E by the certifying
+   instrument's own pass/fail; no ITED-specific numeric limit exists for this network
+   type."* That's a true, checkable citation — the honest version of "verified," not a
+   weaker one.
+4. Seed F12 the same way F13/F14 already were: values are already in
+   `forms-and-procedures-spec.md` §3.4 (13,8 dB / 10,8 dB atenuação/slope, 47–862 MHz,
+   both coletiva and individual; individual adds 23,4 dB / 8,4 dB at 950–2150 MHz) —
+   `network_type: "CC"` (not `SMATV`, which F13 already owns — confirmed against
+   `seed.sql`'s actual enum usage, not assumed from the form name).
+5. Re-run `verify-seed.mjs` — **generalize it while touching it**: today it spot-checks
+   F13/F14 by name (`06-phase3-compliance.md`'s earlier draft flagged this as a risk to
+   check). With four seeded protocols instead of two, make its assertions iterate every
+   seeded `test_protocol` version generically (found active + `verified_by` set +
+   cross-tenant visible) rather than adding a third and fourth hardcoded block.
 
-F12 can be seeded now with the values already quoted in `forms-and-procedures-spec.md`
-§3.4 — no additional source-reading step blocks it.
+## 2a. `job-creation.ts`'s resolution key already matches this
+
+Phase 2's adversarial review caught and fixed a bug where test-protocol resolution used a
+job-type-slug code instead of `network_type` (`05-phase2-job-loop.md`'s implementation —
+see the Phase 2 commit). That fix means F11/F12, once seeded, are automatically reachable
+by any job whose inferred `network_type` is `PC`/`CC` — no additional resolution-logic
+change needed in this phase, only the seed rows and the `dir` extension above.
 
 ## 3. `job_test_result` — extending beyond F13/F14
 
