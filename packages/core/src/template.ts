@@ -39,6 +39,7 @@ export const TestProtocolTest = z.object({
       : t.max !== undefined),
   { message: "min/max required for the given dir" }
 );
+export type TestProtocolTest = z.infer<typeof TestProtocolTest>;
 
 export const TestProtocolBody = z.object({
   network_type: z.enum(["PC", "CC", "FO", "SMATV"]),

@@ -592,6 +592,27 @@ comment on table applied_mutation is
   'to prove (CLAUDE.md Phase 1).';
 
 -- ============================================================================
+-- 11b. Execution step completion — 05-phase2-job-loop.md §7. Not part of
+-- Phase 1's schema (unlike almost everything else Phase 2 writes to, §1) --
+-- there was no per-execution-step completion table until this endpoint
+-- needed one. step_order matches the `order` field inside the resolved
+-- execution_steps template body frozen at job creation
+-- (job.execution_snapshot.steps[].order, §4 step 3; body shape documented
+-- at this file's §4a comment: "execution_steps: { steps: [{ order, label
+-- }] }") -- not a foreign key, since the snapshot is jsonb, not a table.
+-- ============================================================================
+
+create table job_execution_step_completion (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenant(id),
+  job_id        uuid not null references job(id),
+  step_order    int not null,
+  completed_at  timestamptz not null default now(),
+  completed_by  uuid references app_user(id),
+  unique (job_id, step_order)
+);
+
+-- ============================================================================
 -- 12. Row-level security
 --
 -- Applied to every tenant-scoped table. The API connects as fieldready_app
@@ -615,7 +636,7 @@ declare
     'client', 'quote', 'quote_line', 'job', 'job_checklist_item', 'van_audit',
     'equipment', 'job_test_result', 'ref_document', 'termo_responsabilidade',
     'compliance_deadline', 'job_closeout', 'follow_up_action', 'job_photo',
-    'applied_mutation'
+    'applied_mutation', 'job_execution_step_completion'
     -- if you add a table, it needs tenant_id and a place in this array, or the
     -- RLS-coverage check at the bottom of verify-schema.mjs should catch the gap
   ];

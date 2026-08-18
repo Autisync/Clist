@@ -1,10 +1,18 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
+import multipart from "@fastify/multipart";
 import { ZodError } from "zod";
 import { getDb } from "./db.js";
 import { authRoutes } from "./routes/auth.js";
 import { templateRoutes } from "./routes/templates.js";
 import { syncRoutes } from "./routes/sync.js";
+import { catalogRoutes } from "./routes/catalog.js";
+import { clientRoutes } from "./routes/clients.js";
+import { quoteRoutes } from "./routes/quotes.js";
+import { jobRoutes } from "./routes/jobs.js";
+import { vanAuditRoutes } from "./routes/van-audits.js";
+import { equipmentRoutes } from "./routes/equipment.js";
+import { followUpActionRoutes } from "./routes/follow-up-actions.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   await getDb(); // boot/migrate before accepting requests
@@ -12,6 +20,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: process.env.LOG === "1" });
 
   await app.register(cookie);
+  await app.register(multipart);
 
   app.setErrorHandler((err, req, reply) => {
     if (err instanceof ZodError) {
@@ -27,6 +36,13 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(authRoutes);
   await app.register(templateRoutes);
   await app.register(syncRoutes);
+  await app.register(catalogRoutes);
+  await app.register(clientRoutes);
+  await app.register(quoteRoutes);
+  await app.register(jobRoutes);
+  await app.register(vanAuditRoutes);
+  await app.register(equipmentRoutes);
+  await app.register(followUpActionRoutes);
 
   return app;
 }

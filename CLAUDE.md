@@ -133,14 +133,41 @@ quotes/BOM, dispatch gate, execution steps, photos, close-out, compliance
 (REF/termo/deadlines), dashboard, the actual web (Next.js) or mobile (Expo) clients.
 Those are Phase 2/3/4, below.
 
-### Phase 2 — the job loop — designed, not yet built
+### Phase 2 — the job loop — exit criterion met, 18 August
+
 Quote → BOM → job creation with resolved checklist snapshot → readiness gate → dispatch
 → execution steps → photos → close-out. This is the loop every tenant uses regardless of
-compliance profile — build and ship it before any compliance-tier work.
+compliance profile.
 
-*Exit criterion:* a technician completes the full loop on the phone UI, offline, zero
-typed text (PRD §8) — matching the phone flow already validated in the prototype. Full
-build plan, file by file, against Phase 1's actual code: `05-phase2-job-loop.md`. One
+Built: catalog/client/equipment CRUD, quotes/BOM (`apps/api/src/routes/quotes.ts`), job
+creation with checklist-snapshot resolution (`apps/api/src/domain/job-creation.ts`), the
+dispatch gate (`apps/api/src/domain/dispatch-gate.ts`), execution steps, photo upload,
+F13/F14 test-result capture, technician-facing close-out with `rework_cause` kept
+office-only, and sync extended from one mutation type to five
+(`checklist_item.update`, `execution_step.complete`, `test_result.record`,
+`closeout.submit`, `van_audit.record`). See `apps/api/README.md`'s Phase 2 section for
+the full rundown and the two named v1 scope decisions from the dispatch stage
+(van-audit coverage not scoped to a specific van; calibration overwrite instead of
+supersede).
+
+**Exit criterion proven, not assumed:** a technician completes the full loop on the
+phone UI, offline, zero typed text (PRD §8) — matching the phone flow already validated
+in the prototype. `npm run proof:phase2` (root) spins up the real API as a child
+process and, over HTTP only, walks the entire loop: client → quote → BOM → templates →
+accept → create-job (confirming `test_protocol_snapshot` resolves from seed.sql's real,
+verified Tabela 6.12 system template, not a script-local substitute); an early dispatch
+attempt blocked `409 not_ready`; satisfying the gate via sync mutations, a van audit,
+and office `ited_classification` review; dispatch succeeding with all three snapshots
+present, and a same-status re-dispatch attempt rejected `409 wrong_status`; execution-step
+completion, a real multipart photo upload, and test-result capture (both via sync
+mutation and the direct route) evaluated against the frozen protocol; complete +
+technician close-out with the office-only `rework_cause` field confirmed unreachable
+from the technician route; and the same SIGKILL-mid-sync-then-restart-then-replay
+scenario Phase 1 proved, here on `execution_step.complete` to confirm the sync infra
+generalizes beyond the one mutation type Phase 1 exercised it against. 37/37 checks
+passing — `apps/api/test/phase2-proof.mjs`.
+
+Full build plan, file by file, against Phase 1's actual code: `05-phase2-job-loop.md`. One
 scoping call worth flagging here: F13/F14 test-result capture starts in this phase, not
 Phase 3, because both protocols are already verified and activatable
 (`seed.sql`/`verify-seed.mjs`) and the prototype's settled AAR screen captures them

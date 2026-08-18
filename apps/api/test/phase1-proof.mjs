@@ -249,8 +249,9 @@ async function main() {
   if (applied1?.status === "applied") ok("sync: trivial checklist mutation applies");
   else fail("sync: trivial checklist mutation applies", JSON.stringify(sync1.json));
 
-  const read1 = await technician.get(`/sync/_debug/checklist-item/${fixtures.checklistItemId}`);
-  if (read1.json?.status === "ok") ok("sync: underlying row reflects the mutation ('ok')");
+  const read1 = await technician.get(`/jobs/${fixtures.jobId}/readiness`);
+  const read1Item = read1.json?.items?.find((i) => i.id === fixtures.checklistItemId);
+  if (read1Item?.status === "ok") ok("sync: underlying row reflects the mutation ('ok')");
   else fail("sync: underlying row reflects the mutation", JSON.stringify(read1.json));
 
   console.log("  ...  killing the server (SIGKILL) to simulate a crash mid-sync");
@@ -273,8 +274,9 @@ async function main() {
     fail("sync: idempotent replay after restart", JSON.stringify(sync1Replay.json));
   }
 
-  const read2 = await technician.get(`/sync/_debug/checklist-item/${fixtures.checklistItemId}`);
-  if (read2.json?.status === "ok") ok("sync: replay did not double-apply or revert the row");
+  const read2 = await technician.get(`/jobs/${fixtures.jobId}/readiness`);
+  const read2Item = read2.json?.items?.find((i) => i.id === fixtures.checklistItemId);
+  if (read2Item?.status === "ok") ok("sync: replay did not double-apply or revert the row");
   else fail("sync: replay left row unchanged", JSON.stringify(read2.json));
 
   const mutationId2 = crypto.randomUUID();
