@@ -149,8 +149,8 @@ const mk = (cat, label, qty, itemId, status, scope = "job", mandatory = true) =>
   ({ id: Math.random().toString(36).slice(2, 9), cat, label, qty, itemId, status, scope, mandatory });
 
 const SCOPE_META = {
-  job: { label: "No trabalho", tone: "blue" },
-  van: { label: "Stock carrinha", tone: "slate" },
+  job: { label: "No trabalho", tone: "cyan" },
+  van: { label: "Stock carrinha", tone: "zinc" },
   office: { label: "Escritório", tone: "amber" },
 };
 
@@ -279,23 +279,23 @@ function sourcingOptions(itemId, prices) {
 /* --------------------------- UI PIECES --------------------------- */
 
 const CAT_META = {
-  material: { label: "Material", icon: Package, color: "text-blue-600", bg: "bg-blue-50" },
-  equipment: { label: "Equipamento", icon: Wrench, color: "text-purple-600", bg: "bg-purple-50" },
+  material: { label: "Material", icon: Package, color: "text-cyan-600", bg: "bg-cyan-50" },
+  equipment: { label: "Equipamento", icon: Wrench, color: "text-zinc-500", bg: "bg-zinc-100" },
   doc: { label: "Documentação", icon: FileText, color: "text-amber-600", bg: "bg-amber-50" },
 };
 
-function Stat({ label, value, sub, tone = "slate", icon: Icon, trend }) {
+function Stat({ label, value, sub, tone = "zinc", icon: Icon, trend }) {
   const tones = {
-    slate: "border-slate-200", green: "border-green-300", red: "border-red-300", amber: "border-amber-300",
+    zinc: "border-zinc-200", green: "border-green-300", red: "border-red-300", amber: "border-amber-300",
   };
   return (
-    <div className={`bg-white rounded-lg border ${tones[tone]} p-4`}>
+    <div className={`bg-white rounded border ${tones[tone]} p-4`}>
       <div className="flex items-start justify-between">
-        <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">{label}</span>
-        {Icon && <Icon className="w-4 h-4 text-slate-400" />}
+        <span className="text-xs font-medium text-zinc-500 uppercase tracking-wide">{label}</span>
+        {Icon && <Icon className="w-4 h-4 text-zinc-400" />}
       </div>
       <div className="mt-2 flex items-baseline gap-2">
-        <span className="text-2xl font-semibold text-slate-900">{value}</span>
+        <span className="text-2xl font-mono font-semibold tabular-nums text-zinc-900">{value}</span>
         {trend && (
           <span className={`text-xs font-medium flex items-center gap-0.5 ${trend > 0 ? "text-green-600" : "text-red-600"}`}>
             {trend > 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
@@ -303,27 +303,27 @@ function Stat({ label, value, sub, tone = "slate", icon: Icon, trend }) {
           </span>
         )}
       </div>
-      {sub && <p className="mt-1 text-xs text-slate-500">{sub}</p>}
+      {sub && <p className="mt-1 text-xs text-zinc-500">{sub}</p>}
     </div>
   );
 }
 
-function Pill({ children, tone = "slate" }) {
+function Pill({ children, tone = "zinc" }) {
   const tones = {
-    slate: "bg-slate-100 text-slate-700", green: "bg-green-100 text-green-800",
+    zinc: "bg-zinc-100 text-zinc-700", green: "bg-green-100 text-green-800",
     red: "bg-red-100 text-red-800", amber: "bg-amber-100 text-amber-800",
-    blue: "bg-blue-100 text-blue-800",
+    cyan: "bg-cyan-100 text-cyan-800",
   };
   return <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${tones[tone]}`}>{children}</span>;
 }
 
 function Section({ title, desc, right, children }) {
   return (
-    <div className="bg-white rounded-lg border border-slate-200">
-      <div className="px-4 py-3 border-b border-slate-100 flex items-start justify-between gap-4">
+    <div className="bg-white rounded border border-zinc-200">
+      <div className="px-4 py-3 border-b border-zinc-100 flex items-start justify-between gap-4">
         <div>
-          <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
-          {desc && <p className="text-xs text-slate-500 mt-0.5">{desc}</p>}
+          <h3 className="text-sm font-semibold text-zinc-900">{title}</h3>
+          {desc && <p className="text-xs text-zinc-500 mt-0.5">{desc}</p>}
         </div>
         {right}
       </div>
@@ -355,22 +355,22 @@ export default function FieldReady() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="min-h-screen bg-zinc-50 text-zinc-900">
       {/* header */}
-      <header className="bg-slate-900 text-white">
+      <header className="bg-zinc-900 text-white">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Radio className="w-5 h-5 text-blue-400" />
-            <span className="font-semibold">FieldReady</span>
-            <span className="text-xs text-slate-400 hidden sm:inline">· instalação de antenas &amp; telecom</span>
+          <div className="flex items-center gap-2.5">
+            <Radio className="w-4 h-4 text-cyan-400" strokeWidth={2.5} />
+            <span className="font-mono font-bold uppercase tracking-wider text-sm">FieldReady</span>
+            <span className="text-xs text-zinc-500 font-mono hidden sm:inline">/ antenas &amp; telecom</span>
           </div>
           <div className="flex items-center gap-3">
-            <div className="text-xs text-slate-300 hidden md:block">Antenas Rex, Lda · Lisboa</div>
-            <div className="flex rounded-md overflow-hidden border border-slate-700">
+            <div className="text-xs text-zinc-300 hidden md:block">Antenas Rex, Lda · Lisboa</div>
+            <div className="flex rounded-md overflow-hidden border border-zinc-700">
               {[["office", "Escritório", Briefcase], ["phone", "Técnico", Smartphone]].map(([m, l, I]) => (
                 <button key={m} onClick={() => setMode(m)}
                   className={`flex items-center gap-1.5 px-2.5 py-1 text-xs ${
-                    mode === m ? "bg-blue-500 text-white" : "text-slate-400 hover:text-white"
+                    mode === m ? "bg-cyan-500 text-white" : "text-zinc-400 hover:text-white"
                   }`}>
                   <I className="w-3.5 h-3.5" />{l}
                 </button>
@@ -383,7 +383,7 @@ export default function FieldReady() {
             <button key={n.id}
               onClick={() => { setTab(n.id); setOpenJobId(null); }}
               className={`flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 whitespace-nowrap ${
-                tab === n.id ? "border-blue-400 text-white" : "border-transparent text-slate-400 hover:text-slate-200"
+                tab === n.id ? "border-cyan-400 text-white" : "border-transparent text-zinc-400 hover:text-zinc-200"
               }`}>
               <n.icon className="w-4 h-4" />{n.label}
             </button>
@@ -413,7 +413,7 @@ export default function FieldReady() {
       </main>
 
       {toast && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg">
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-zinc-900 text-white border border-zinc-700 font-mono text-xs tracking-wide px-4 py-2 rounded">
           {toast}
         </div>
       )}
@@ -479,7 +479,7 @@ function Dashboard({ jobs, prices, onOpenJob }) {
       </div>
 
       {/* headline insight */}
-      <div className="bg-white rounded-lg border-l-4 border-l-red-500 border border-slate-200 p-4">
+      <div className="bg-white rounded border-l-4 border-l-red-500 border border-zinc-200 p-4">
         <div className="flex items-start gap-3">
           <AlertTriangle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
           <div className="flex-1">
@@ -498,7 +498,7 @@ function Dashboard({ jobs, prices, onOpenJob }) {
                 <div className="text-xs text-red-700">taxa de retorno ao local</div>
               </div>
             </div>
-            <p className="mt-3 text-xs text-slate-600">
+            <p className="mt-3 text-xs text-zinc-600">
               <span className="font-medium">Ação:</span> ativar o bloqueio obrigatório de despacho. Nos {ungated.length} trabalhos
               afetados isto teria evitado ~{ungated.reduce((a, h) => a + Math.max(0, h.actualH - h.quotedH), 0).toFixed(1)} h
               de deslocações repetidas.
@@ -521,7 +521,7 @@ function Dashboard({ jobs, prices, onOpenJob }) {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
-          <p className="text-xs text-slate-500 mt-2">
+          <p className="text-xs text-zinc-500 mt-2">
             "TDT reparação" está +{byType.find((b) => b.type === "TDT reparação")?.variance}% acima do orçamento.
             Rever o tempo-padrão de 2 h para 3 h.
           </p>
@@ -530,13 +530,13 @@ function Dashboard({ jobs, prices, onOpenJob }) {
         <Section title="First-time fix — tendência" desc="Percentagem de trabalhos fechados sem segunda visita">
           <ResponsiveContainer width="100%" height={200}>
             <LineChart data={FFR_TREND}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
               <XAxis dataKey="m" tick={{ fontSize: 11 }} />
               <YAxis domain={[50, 100]} tick={{ fontSize: 11 }} unit="%" />
               <Tooltip />
               <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Line type="monotone" dataKey="ffr" name="Real" stroke="#2563eb" strokeWidth={2} />
-              <Line type="monotone" dataKey="target" name="Meta" stroke="#94a3b8" strokeDasharray="4 4" strokeWidth={1} dot={false} />
+              <Line type="monotone" dataKey="ffr" name="Real" stroke="#0891b2" strokeWidth={2} />
+              <Line type="monotone" dataKey="target" name="Meta" stroke="#a1a1aa" strokeDasharray="4 4" strokeWidth={1} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </Section>
@@ -545,15 +545,15 @@ function Dashboard({ jobs, prices, onOpenJob }) {
           <div className="space-y-2">
             {causeCounts.map((c) => (
               <div key={c.cause} className="flex items-center gap-3">
-                <div className="w-40 text-xs text-slate-700 shrink-0">{c.cause}</div>
-                <div className="flex-1 bg-slate-100 rounded h-5 overflow-hidden">
-                  <div className="bg-slate-700 h-full" style={{ width: `${(c.n / causeCounts[0].n) * 100}%` }} />
+                <div className="w-40 text-xs text-zinc-700 shrink-0">{c.cause}</div>
+                <div className="flex-1 bg-zinc-100 rounded h-5 overflow-hidden">
+                  <div className="bg-zinc-700 h-full" style={{ width: `${(c.n / causeCounts[0].n) * 100}%` }} />
                 </div>
-                <div className="w-6 text-xs text-slate-600 text-right">{c.n}</div>
+                <div className="w-6 text-xs text-zinc-600 text-right">{c.n}</div>
               </div>
             ))}
           </div>
-          <p className="text-xs text-slate-500 mt-3">
+          <p className="text-xs text-zinc-500 mt-3">
             "Material em falta" é 40% das causas e é 100% evitável pelo readiness gate.
           </p>
         </Section>
@@ -561,16 +561,16 @@ function Dashboard({ jobs, prices, onOpenJob }) {
         <Section title="Alertas de preço" desc="Subidas detetadas nos recibos digitalizados">
           <div className="space-y-3">
             {priceAlerts.slice(0, 4).map((a, i) => (
-              <div key={i} className="border border-slate-200 rounded p-2.5">
+              <div key={i} className="border border-zinc-200 rounded p-2.5">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-xs font-medium truncate">{a.item.name}</div>
-                    <div className="text-xs text-slate-500">{a.supplier.name}</div>
+                    <div className="text-xs text-zinc-500">{a.supplier.name}</div>
                   </div>
                   <Pill tone="red">+{a.delta.toFixed(1)}%</Pill>
                 </div>
-                <div className="mt-1.5 text-xs text-slate-600">
-                  {eur(a.prev)} → <span className="font-medium text-slate-900">{eur(a.price)}</span>
+                <div className="mt-1.5 text-xs text-zinc-600">
+                  {eur(a.prev)} → <span className="font-medium text-zinc-900">{eur(a.price)}</span>
                   {a.alt && a.alt.price < a.price && (
                     <span className="text-green-700"> · {a.alt.supplier.name.split("—")[0].trim()} tem a {eur(a.alt.price)} (poupa {eur(a.price - a.alt.price)})</span>
                   )}
@@ -590,11 +590,11 @@ function Dashboard({ jobs, prices, onOpenJob }) {
             { p: "Média", t: "Adicionar 1 rolo T100 e 2 fontes 24V ao stock da carrinha", w: "Itens em falta em 3 dos últimos 6 trabalhos de instalação nova." },
             { p: "Baixa", t: "Sincronizar horários dos fornecedores semanalmente", w: "Dados do Google expiram; a rota de recolha depende de horários corretos." },
           ].map((a, i) => (
-            <div key={i} className="flex items-start gap-3 p-2.5 border border-slate-200 rounded">
-              <Pill tone={a.p === "Alta" ? "red" : a.p === "Média" ? "amber" : "slate"}>{a.p}</Pill>
+            <div key={i} className="flex items-start gap-3 p-2.5 border border-zinc-200 rounded">
+              <Pill tone={a.p === "Alta" ? "red" : a.p === "Média" ? "amber" : "zinc"}>{a.p}</Pill>
               <div className="min-w-0">
                 <div className="text-sm font-medium">{a.t}</div>
-                <div className="text-xs text-slate-500 mt-0.5">{a.w}</div>
+                <div className="text-xs text-zinc-500 mt-0.5">{a.w}</div>
               </div>
             </div>
           ))}
@@ -608,9 +608,9 @@ function Dashboard({ jobs, prices, onOpenJob }) {
               className="w-full flex items-center justify-between p-2.5 border border-amber-200 bg-amber-50 rounded hover:bg-amber-100 text-left">
               <div>
                 <div className="text-sm font-medium">{b.id} · {b.title}</div>
-                <div className="text-xs text-slate-600">{b.scheduled} · {b.checklist.filter((c) => c.status === "missing").length} itens em falta</div>
+                <div className="text-xs text-zinc-600">{b.scheduled} · {b.checklist.filter((c) => c.status === "missing").length} itens em falta</div>
               </div>
-              <ArrowRight className="w-4 h-4 text-slate-500" />
+              <ArrowRight className="w-4 h-4 text-zinc-500" />
             </button>
           ))}
         </Section>
@@ -636,29 +636,29 @@ function JobList({ jobs, onOpen }) {
             const r = readiness(j);
             return (
               <button key={j.id} onClick={() => onOpen(j.id)}
-                className="w-full text-left border border-slate-200 rounded-lg p-3 hover:border-slate-400">
+                className="w-full text-left border border-zinc-200 rounded p-3 hover:border-zinc-400">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono text-slate-500">{j.id}</span>
-                      <Pill tone={j.status === "in-progress" ? "blue" : "slate"}>
+                      <span className="text-xs font-mono text-zinc-500">{j.id}</span>
+                      <Pill tone={j.status === "in-progress" ? "cyan" : "zinc"}>
                         {j.status === "in-progress" ? "Em curso" : "Pré-despacho"}
                       </Pill>
                     </div>
                     <div className="text-sm font-medium mt-1">{j.title}</div>
-                    <div className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
+                    <div className="text-xs text-zinc-500 flex items-center gap-1 mt-0.5">
                       <MapPin className="w-3 h-3" />{j.address}
                     </div>
-                    <div className="text-xs text-slate-500 mt-0.5">
+                    <div className="text-xs text-zinc-500 mt-0.5">
                       {j.scheduled} · {j.tech} · orçamento {j.quotedHours} h / {eur(j.quotedMaterials)}
                     </div>
                   </div>
                   <div className="text-right shrink-0">
-                    <div className={`text-lg font-semibold ${r.cleared ? "text-green-600" : "text-amber-600"}`}>{pct(r.score)}</div>
-                    <div className="text-xs text-slate-500">readiness</div>
+                    <div className={`text-lg font-mono font-semibold tabular-nums ${r.cleared ? "text-green-600" : "text-amber-600"}`}>{pct(r.score)}</div>
+                    <div className="text-xs text-zinc-500">readiness</div>
                   </div>
                 </div>
-                <div className="mt-2 h-1.5 bg-slate-100 rounded overflow-hidden">
+                <div className="mt-2 h-1.5 bg-zinc-100 rounded overflow-hidden">
                   <div className={`h-full ${r.cleared ? "bg-green-500" : "bg-amber-500"}`} style={{ width: `${r.score}%` }} />
                 </div>
               </button>
@@ -671,7 +671,7 @@ function JobList({ jobs, onOpen }) {
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-left text-slate-500 border-b border-slate-200">
+              <tr className="text-left text-zinc-500 border-b border-zinc-200">
                 <th className="py-1.5 pr-3">Trabalho</th><th className="pr-3">Tipo</th><th className="pr-3">Data</th>
                 <th className="pr-3">Horas</th><th className="pr-3">Material</th>
                 <th className="pr-3">Readiness</th><th className="pr-3">1ª visita</th><th>Causa</th>
@@ -679,10 +679,10 @@ function JobList({ jobs, onOpen }) {
             </thead>
             <tbody>
               {HISTORY.map((h) => (
-                <tr key={h.id} className="border-b border-slate-100">
-                  <td className="py-1.5 pr-3 font-mono text-slate-600">{h.id}</td>
+                <tr key={h.id} className="border-b border-zinc-100">
+                  <td className="py-1.5 pr-3 font-mono text-zinc-600">{h.id}</td>
                   <td className="pr-3">{h.type}</td>
-                  <td className="pr-3 text-slate-500">{h.date}</td>
+                  <td className="pr-3 text-zinc-500">{h.date}</td>
                   <td className={`pr-3 ${h.actualH > h.quotedH * 1.1 ? "text-red-600 font-medium" : ""}`}>
                     {h.actualH} / {h.quotedH}
                   </td>
@@ -691,7 +691,7 @@ function JobList({ jobs, onOpen }) {
                   </td>
                   <td className={`pr-3 ${h.readiness < 100 ? "text-amber-600 font-medium" : "text-green-600"}`}>{h.readiness}%</td>
                   <td className="pr-3">{h.firstFix ? <CheckCircle2 className="w-3.5 h-3.5 text-green-600" /> : <XCircle className="w-3.5 h-3.5 text-red-500" />}</td>
-                  <td className="text-slate-600">{h.cause || "—"}</td>
+                  <td className="text-zinc-600">{h.cause || "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -733,27 +733,27 @@ function JobDetail({ job, prices, onBack, onUpdate, flash }) {
 
   return (
     <div className="space-y-5">
-      <button onClick={onBack} className="text-xs text-slate-500 hover:text-slate-900">← Trabalhos</button>
+      <button onClick={onBack} className="text-xs text-zinc-500 hover:text-zinc-900">← Trabalhos</button>
 
-      <div className="bg-white rounded-lg border border-slate-200 p-4">
+      <div className="bg-white rounded border border-zinc-200 p-4">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="text-xs font-mono text-slate-500">{job.id}</div>
+            <div className="text-xs font-mono text-zinc-500">{job.id}</div>
             <h2 className="text-lg font-semibold">{job.title}</h2>
-            <div className="text-xs text-slate-500 mt-1">{job.client} · {job.address}</div>
-            <div className="text-xs text-slate-500">{job.scheduled} · {job.tech} · {job.type}</div>
+            <div className="text-xs text-zinc-500 mt-1">{job.client} · {job.address}</div>
+            <div className="text-xs text-zinc-500">{job.scheduled} · {job.tech} · {job.type}</div>
           </div>
           <div className="text-right shrink-0">
-            <div className="text-xs text-slate-500">Orçamentado</div>
+            <div className="text-xs text-zinc-500">Orçamentado</div>
             <div className="text-sm font-medium">{job.quotedHours} h · {eur(job.quotedMaterials)}</div>
           </div>
         </div>
 
-        <div className="mt-4 flex gap-1 border-b border-slate-200">
+        <div className="mt-4 flex gap-1 border-b border-zinc-200">
           {[["ready", "1 · Readiness"], ["exec", "2 · Execução"], ["aar", "3 · After-action report"]].map(([id, label]) => (
             <button key={id} onClick={() => setStage(id)}
               className={`px-3 py-1.5 text-xs border-b-2 -mb-px ${
-                stage === id ? "border-blue-600 text-blue-700 font-medium" : "border-transparent text-slate-500 hover:text-slate-800"
+                stage === id ? "border-cyan-600 text-cyan-700 font-medium" : "border-transparent text-zinc-500 hover:text-zinc-800"
               }`}>{label}</button>
           ))}
         </div>
@@ -761,7 +761,7 @@ function JobDetail({ job, prices, onBack, onUpdate, flash }) {
 
       {stage === "ready" && (
         <>
-          <div className={`rounded-lg border p-4 ${r.cleared ? "bg-green-50 border-green-300" : "bg-amber-50 border-amber-300"}`}>
+          <div className={`rounded border p-4 ${r.cleared ? "bg-green-50 border-green-300" : "bg-amber-50 border-amber-300"}`}>
             <div className="flex items-center justify-between gap-4 flex-wrap">
               <div className="flex items-center gap-3">
                 {r.cleared ? <CheckCircle2 className="w-6 h-6 text-green-600" /> : <AlertTriangle className="w-6 h-6 text-amber-600" />}
@@ -769,13 +769,13 @@ function JobDetail({ job, prices, onBack, onUpdate, flash }) {
                   <div className="text-sm font-semibold">
                     {r.cleared ? "Pronto para despacho" : `Despacho bloqueado — ${missing.filter((m) => m.mandatory).length} itens obrigatórios em falta`}
                   </div>
-                  <div className="text-xs text-slate-600">{r.ok} de {r.total} verificações obrigatórias · {pct(r.score)}</div>
+                  <div className="text-xs text-zinc-600">{r.ok} de {r.total} verificações obrigatórias · {pct(r.score)}</div>
                 </div>
               </div>
               <button disabled={!r.cleared}
                 onClick={() => { flash("Trabalho despachado — cronómetro iniciado"); setStage("exec"); }}
                 className={`px-4 py-2 rounded text-sm font-medium ${
-                  r.cleared ? "bg-green-600 text-white hover:bg-green-700" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                  r.cleared ? "bg-green-600 text-white hover:bg-green-700" : "bg-zinc-200 text-zinc-400 cursor-not-allowed"
                 }`}>
                 Despachar trabalho
               </button>
@@ -799,28 +799,28 @@ function JobDetail({ job, prices, onBack, onUpdate, flash }) {
                     const CatIcon = CAT_META[c.cat].icon;
                     return (
                       <div key={c.id} className={`flex items-center gap-3 p-2 rounded border ${
-                        c.status === "ok" ? "border-slate-100" : "border-red-200 bg-red-50"
+                        c.status === "ok" ? "border-zinc-100" : "border-red-200 bg-red-50"
                       }`}>
                         <button onClick={() => setItem(c.id, c.status === "ok" ? "missing" : "ok")}
                           className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
-                            c.status === "ok" ? "bg-green-600 border-green-600" : "border-slate-300 bg-white"
+                            c.status === "ok" ? "bg-green-600 border-green-600" : "border-zinc-300 bg-white"
                           }`}>
                           {c.status === "ok" && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
                         </button>
                         <CatIcon className={`w-4 h-4 shrink-0 ${CAT_META[c.cat].color}`} />
                         <div className="flex-1 min-w-0">
                           <div className="text-sm flex items-center gap-2">
-                            <span className={c.status === "ok" ? "text-slate-700" : "font-medium"}>{c.label}</span>
+                            <span className={c.status === "ok" ? "text-zinc-700" : "font-medium"}>{c.label}</span>
                             {!c.mandatory && <Pill>opcional</Pill>}
                           </div>
                           {c.status === "missing" && src && (
-                            <div className="text-xs text-slate-600 mt-0.5">
+                            <div className="text-xs text-zinc-600 mt-0.5">
                               {src.supplier.name.split("—")[0].trim()} · {eur(src.price)} ·{" "}
                               <span className={src.state.open ? "text-green-700" : "text-red-600"}>{src.state.text}</span> · {src.supplier.distanceKm} km
                             </div>
                           )}
                         </div>
-                        <div className="text-xs text-slate-500 shrink-0">×{c.qty}</div>
+                        <div className="text-xs text-zinc-500 shrink-0">×{c.qty}</div>
                       </div>
                     );
                   })}
@@ -834,14 +834,14 @@ function JobDetail({ job, prices, onBack, onUpdate, flash }) {
               desc="Combina preço histórico, distância e horário do fornecedor (dados Google Places)">
               <div className="space-y-3">
                 {pickupPlan.slice(0, 3).map((p, i) => (
-                  <div key={p.supplier.id} className={`border rounded p-3 ${i === 0 ? "border-blue-400 bg-blue-50" : "border-slate-200"}`}>
+                  <div key={p.supplier.id} className={`border rounded p-3 ${i === 0 ? "border-cyan-400 bg-cyan-50" : "border-zinc-200"}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <div className="text-sm font-medium flex items-center gap-2">
                           {p.supplier.name}
-                          {i === 0 && <Pill tone="blue">recomendado</Pill>}
+                          {i === 0 && <Pill tone="cyan">recomendado</Pill>}
                         </div>
-                        <div className="text-xs text-slate-600 mt-0.5 flex items-center gap-2 flex-wrap">
+                        <div className="text-xs text-zinc-600 mt-0.5 flex items-center gap-2 flex-wrap">
                           <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{p.supplier.distanceKm} km</span>
                           <span className={p.state.open ? "text-green-700 font-medium" : "text-red-600 font-medium"}>{p.state.text}</span>
                           <span>{p.items.length} de {missingMaterials.length} itens</span>
@@ -849,12 +849,12 @@ function JobDetail({ job, prices, onBack, onUpdate, flash }) {
                       </div>
                       <div className="text-right shrink-0">
                         <div className="text-sm font-semibold">{eur(p.total)}</div>
-                        <div className="text-xs text-slate-500">estimado</div>
+                        <div className="text-xs text-zinc-500">estimado</div>
                       </div>
                     </div>
-                    <div className="mt-2 pt-2 border-t border-slate-200 space-y-0.5">
+                    <div className="mt-2 pt-2 border-t border-zinc-200 space-y-0.5">
                       {p.items.map((it, k) => (
-                        <div key={k} className="flex justify-between text-xs text-slate-600">
+                        <div key={k} className="flex justify-between text-xs text-zinc-600">
                           <span>{it.line.qty}× {itemById(it.line.itemId).name}</span>
                           <span>{eur(it.price * it.line.qty)}</span>
                         </div>
@@ -899,28 +899,28 @@ function Execution({ job }) {
 
   return (
     <>
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center justify-between">
+      <div className="bg-cyan-50 border border-cyan-200 rounded p-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Clock className="w-5 h-5 text-blue-600" />
+          <Clock className="w-5 h-5 text-cyan-600" />
           <div>
             <div className="text-sm font-semibold">Cronómetro a correr — 2 h 14 min</div>
-            <div className="text-xs text-slate-600">Orçamentado {job.quotedHours} h · restam {(job.quotedHours - 2.23).toFixed(1)} h antes de derrapar</div>
+            <div className="text-xs text-zinc-600">Orçamentado {job.quotedHours} h · restam {(job.quotedHours - 2.23).toFixed(1)} h antes de derrapar</div>
           </div>
         </div>
-        <div className="text-2xl font-semibold text-blue-700">{pct((2.23 / job.quotedHours) * 100)}</div>
+        <div className="text-2xl font-mono font-semibold tabular-nums text-cyan-700">{pct((2.23 / job.quotedHours) * 100)}</div>
       </div>
 
       <Section title="Passos de execução" desc={`${done.length} de ${steps.length} concluídos`}>
         <div className="space-y-1.5">
           {steps.map((s, i) => (
             <button key={i} onClick={() => toggle(i)}
-              className="w-full flex items-center gap-3 p-2 rounded hover:bg-slate-50 text-left">
+              className="w-full flex items-center gap-3 p-2 rounded hover:bg-zinc-50 text-left">
               <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
-                done.includes(i) ? "bg-blue-600 border-blue-600" : "border-slate-300"
+                done.includes(i) ? "bg-cyan-600 border-cyan-600" : "border-zinc-300"
               }`}>
                 {done.includes(i) && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
               </div>
-              <span className={`text-sm ${done.includes(i) ? "text-slate-400 line-through" : "text-slate-800"}`}>{s}</span>
+              <span className={`text-sm ${done.includes(i) ? "text-zinc-400 line-through" : "text-zinc-800"}`}>{s}</span>
             </button>
           ))}
         </div>
@@ -929,9 +929,9 @@ function Execution({ job }) {
       <Section title="Registo fotográfico" desc="Antes / durante / depois — obrigatório para fecho">
         <div className="grid grid-cols-3 gap-2">
           {["Antes", "Durante", "Depois"].map((l) => (
-            <div key={l} className="border-2 border-dashed border-slate-300 rounded p-6 text-center">
-              <Camera className="w-5 h-5 text-slate-400 mx-auto" />
-              <div className="text-xs text-slate-500 mt-1">{l}</div>
+            <div key={l} className="border-2 border-dashed border-zinc-300 rounded p-6 text-center">
+              <Camera className="w-5 h-5 text-zinc-400 mx-auto" />
+              <div className="text-xs text-zinc-500 mt-1">{l}</div>
             </div>
           ))}
         </div>
@@ -974,12 +974,12 @@ function AAR({ job, flash }) {
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
-              <tr className="text-left text-slate-500 border-b border-slate-200">
+              <tr className="text-left text-zinc-500 border-b border-zinc-200">
                 <th className="py-1.5 pr-2">Tomada</th>
                 {TDT_TESTS.map((t) => (
                   <th key={t.id} className="pr-2 font-normal">
-                    <div className="font-medium text-slate-700">{t.label}</div>
-                    <div className="text-slate-400">{threshLabel(t)}</div>
+                    <div className="font-medium text-zinc-700">{t.label}</div>
+                    <div className="text-zinc-400">{threshLabel(t)}</div>
                   </th>
                 ))}
                 <th>Resultado</th>
@@ -989,15 +989,15 @@ function AAR({ job, flash }) {
               {results.map((o, i) => {
                 const ok = o.tests.every((x) => x.r === "pass");
                 return (
-                  <tr key={i} className="border-b border-slate-100">
+                  <tr key={i} className="border-b border-zinc-100">
                     <td className="py-2 pr-2 font-medium">{o.name}</td>
                     {o.tests.map((x, k) => (
                       <td key={k} className="pr-2 py-1">
                         <input value={x.v} onChange={(e) => setVal(i, x.t.id, e.target.value)}
-                          className={`w-20 px-1.5 py-1 rounded border text-xs ${
+                          className={`w-20 px-1.5 py-1 rounded border font-mono tabular-nums text-xs ${
                             x.r === "fail" ? "border-red-400 bg-red-50 text-red-800 font-medium"
                               : x.r === "pass" ? "border-green-300 bg-green-50 text-green-800"
-                                : "border-slate-300"
+                                : "border-zinc-300"
                           }`} />
                       </td>
                     ))}
@@ -1013,7 +1013,7 @@ function AAR({ job, flash }) {
             ? "Todas as tomadas conformes — pode emitir a declaração de conformidade."
             : `${failed.length} tomada(s) fora de especificação: ${failed.map((f) => f.name).join(", ")}. Declaração de conformidade bloqueada até resolução ou ressalva assinada pelo cliente.`}
         </div>
-        <p className="text-xs text-slate-400 mt-2">
+        <p className="text-xs text-zinc-400 mt-2">
           Limiares são valores por defeito e devem ser confirmados contra a sua especificação de aceitação e o emissor que serve o local.
         </p>
       </Section>
@@ -1022,21 +1022,21 @@ function AAR({ job, flash }) {
         <Section title="Tempo e custo" desc="Alimenta diretamente os orçamentos futuros">
           <div className="space-y-3">
             <div>
-              <label className="text-xs text-slate-500">Horas reais</label>
+              <label className="text-xs text-zinc-500">Horas reais</label>
               <div className="flex items-center gap-2 mt-1">
                 <input value={actualH} onChange={(e) => setActualH(e.target.value)}
-                  className="w-24 px-2 py-1.5 border border-slate-300 rounded text-sm" />
-                <span className="text-xs text-slate-500">vs {job.quotedHours} h orçamentadas</span>
+                  className="w-24 px-2 py-1.5 border border-zinc-300 rounded text-sm" />
+                <span className="text-xs text-zinc-500">vs {job.quotedHours} h orçamentadas</span>
                 {!isNaN(varH) && (
-                  <Pill tone={varH > 10 ? "red" : varH < -5 ? "green" : "slate"}>
+                  <Pill tone={varH > 10 ? "red" : varH < -5 ? "green" : "zinc"}>
                     {varH > 0 ? "+" : ""}{varH.toFixed(0)}%
                   </Pill>
                 )}
               </div>
             </div>
-            <div className="text-xs space-y-1 pt-2 border-t border-slate-100">
-              <div className="flex justify-between"><span className="text-slate-500">Material orçamentado</span><span>{eur(job.quotedMaterials)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Material consumido</span><span className="font-medium">{eur(job.quotedMaterials * 1.11)}</span></div>
+            <div className="text-xs space-y-1 pt-2 border-t border-zinc-100">
+              <div className="flex justify-between"><span className="text-zinc-500">Material orçamentado</span><span>{eur(job.quotedMaterials)}</span></div>
+              <div className="flex justify-between"><span className="text-zinc-500">Material consumido</span><span className="font-medium">{eur(job.quotedMaterials * 1.11)}</span></div>
               <div className="flex justify-between text-red-600"><span>Derrapagem</span><span className="font-medium">{eur(job.quotedMaterials * 0.11)}</span></div>
             </div>
             {varH > 10 && (
@@ -1051,29 +1051,29 @@ function AAR({ job, flash }) {
         <Section title="Resultado e causa-raiz" desc="Taxonomia fixa — é isto que torna o histórico analisável">
           <div className="space-y-3">
             <div>
-              <label className="text-xs text-slate-500">Resolvido à primeira visita?</label>
+              <label className="text-xs text-zinc-500">Resolvido à primeira visita?</label>
               <div className="flex gap-2 mt-1">
                 {[["yes", "Sim"], ["no", "Não — requer retorno"]].map(([v, l]) => (
                   <button key={v} onClick={() => setFirstFix(v)}
                     className={`px-3 py-1.5 rounded text-xs border ${
-                      firstFix === v ? "bg-slate-900 text-white border-slate-900" : "border-slate-300 text-slate-600"
+                      firstFix === v ? "bg-zinc-900 text-white border-zinc-900" : "border-zinc-300 text-zinc-600"
                     }`}>{l}</button>
                 ))}
               </div>
             </div>
             {firstFix === "no" && (
               <div>
-                <label className="text-xs text-slate-500">Causa-raiz</label>
+                <label className="text-xs text-zinc-500">Causa-raiz</label>
                 <select value={cause} onChange={(e) => setCause(e.target.value)}
-                  className="w-full mt-1 px-2 py-1.5 border border-slate-300 rounded text-sm bg-white">
+                  className="w-full mt-1 px-2 py-1.5 border border-zinc-300 rounded text-sm bg-white">
                   {CAUSES.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
             )}
             <div>
-              <label className="text-xs text-slate-500">Observações</label>
+              <label className="text-xs text-zinc-500">Observações</label>
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4}
-                className="w-full mt-1 px-2 py-1.5 border border-slate-300 rounded text-xs" />
+                className="w-full mt-1 px-2 py-1.5 border border-zinc-300 rounded text-xs" />
             </div>
           </div>
         </Section>
@@ -1086,24 +1086,24 @@ function AAR({ job, flash }) {
             { t: "Adicionar 'verificar cablagem existente' ao levantamento pré-orçamento", who: "Processo", when: "Esta semana" },
             { t: "Repor stock: 1 rolo T100, 2 fontes 24V", who: "Compras", when: "Antes do próximo trabalho" },
           ].map((a, i) => (
-            <div key={i} className="flex items-center justify-between p-2 border border-slate-200 rounded">
+            <div key={i} className="flex items-center justify-between p-2 border border-zinc-200 rounded">
               <span className="text-sm">{a.t}</span>
-              <span className="text-xs text-slate-500 shrink-0 ml-3">{a.who} · {a.when}</span>
+              <span className="text-xs text-zinc-500 shrink-0 ml-3">{a.who} · {a.when}</span>
             </div>
           ))}
         </div>
       </Section>
 
-      <div className="bg-white rounded-lg border border-slate-200 p-4 flex items-center justify-between gap-4 flex-wrap">
+      <div className="bg-white rounded border border-zinc-200 p-4 flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3">
-          <PenTool className="w-5 h-5 text-slate-400" />
+          <PenTool className="w-5 h-5 text-zinc-400" />
           <div>
             <div className="text-sm font-medium">Assinatura do cliente</div>
-            <div className="text-xs text-slate-500">Confirma o trabalho realizado e as ressalvas registadas</div>
+            <div className="text-xs text-zinc-500">Confirma o trabalho realizado e as ressalvas registadas</div>
           </div>
         </div>
         <button onClick={() => flash("AAR fechado · histórico e dashboard atualizados · faturação enviada para o Moloni")}
-          className="px-4 py-2 bg-slate-900 text-white rounded text-sm font-medium hover:bg-slate-800">
+          className="px-4 py-2 bg-zinc-900 text-white rounded text-sm font-medium hover:bg-zinc-800">
           Fechar trabalho
         </button>
       </div>
@@ -1148,14 +1148,14 @@ function Suppliers({ prices, setPrices, selected, setSelected, flash }) {
           const st = openState(sup);
           return (
             <button key={sup.id} onClick={() => setSelected(sup.id)}
-              className={`text-left p-3 rounded-lg border ${
-                selected === sup.id ? "border-slate-900 bg-white" : "border-slate-200 bg-white hover:border-slate-400"
+              className={`text-left p-3 rounded border ${
+                selected === sup.id ? "border-zinc-900 bg-white" : "border-zinc-200 bg-white hover:border-zinc-400"
               }`}>
               <div className="text-sm font-medium leading-tight">{sup.name}</div>
-              <div className="text-xs text-slate-500 mt-1">{sup.category}</div>
+              <div className="text-xs text-zinc-500 mt-1">{sup.category}</div>
               <div className="mt-2 flex items-center justify-between">
                 <Pill tone={st.open ? "green" : "red"}>{st.open ? "Aberto" : "Fechado"}</Pill>
-                <span className="text-xs text-slate-500">{sup.distanceKm} km</span>
+                <span className="text-xs text-zinc-500">{sup.distanceKm} km</span>
               </div>
             </button>
           );
@@ -1166,19 +1166,19 @@ function Suppliers({ prices, setPrices, selected, setSelected, flash }) {
         right={<Pill tone={state.open ? "green" : "red"}>{state.text}</Pill>}>
         <div className="grid md:grid-cols-2 gap-4 text-xs">
           <div className="space-y-1.5">
-            <div className="flex gap-2"><MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" /><span>{s.address}</span></div>
-            <div className="text-slate-500">{s.phone} · {s.distanceKm} km da base</div>
-            <div className="text-slate-500">{s.account}</div>
-            <div className="text-slate-400 pt-1">
-              Morada e horário sincronizados do Google Places · place_id <code className="text-slate-500">{s.placeId}</code> · {s.syncedAt}
+            <div className="flex gap-2"><MapPin className="w-3.5 h-3.5 text-zinc-400 shrink-0 mt-0.5" /><span>{s.address}</span></div>
+            <div className="text-zinc-500">{s.phone} · {s.distanceKm} km da base</div>
+            <div className="text-zinc-500">{s.account}</div>
+            <div className="text-zinc-400 pt-1">
+              Morada e horário sincronizados do Google Places · place_id <code className="text-zinc-500">{s.placeId}</code> · {s.syncedAt}
             </div>
           </div>
           <div>
-            <div className="font-medium text-slate-700 mb-1">Horário</div>
+            <div className="font-medium text-zinc-700 mb-1">Horário</div>
             <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
               {["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"].map((d, i) => (
                 <div key={d} className="flex justify-between">
-                  <span className="text-slate-500">{d}</span>
+                  <span className="text-zinc-500">{d}</span>
                   <span>{s.hours[i] ? `${s.hours[i].open}–${s.hours[i].close}` : "Fechado"}</span>
                 </div>
               ))}
@@ -1190,13 +1190,13 @@ function Suppliers({ prices, setPrices, selected, setSelected, flash }) {
       <Section title="Tabela de preços" desc="Atualizada por digitalização de recibo ou manualmente"
         right={
           <button onClick={() => setScan(FAKE_RECEIPT)}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 text-white rounded text-xs font-medium hover:bg-slate-800">
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-900 text-white rounded text-xs font-medium hover:bg-zinc-800">
             <Receipt className="w-3.5 h-3.5" />Digitalizar recibo
           </button>
         }>
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-left text-slate-500 border-b border-slate-200">
+            <tr className="text-left text-zinc-500 border-b border-zinc-200">
               <th className="py-1.5 pr-2">Artigo</th><th className="pr-2">SKU</th>
               <th className="pr-2">Preço</th><th className="pr-2">Variação</th>
               <th className="pr-2">Origem</th><th>Atualizado</th>
@@ -1208,18 +1208,18 @@ function Suppliers({ prices, setPrices, selected, setSelected, flash }) {
               const d = p.prev ? ((p.price - p.prev) / p.prev) * 100 : 0;
               const stale = new Date(p.date) < new Date("2026-07-01");
               return (
-                <tr key={i} className="border-b border-slate-100">
+                <tr key={i} className="border-b border-zinc-100">
                   <td className="py-1.5 pr-2">{it.name}</td>
-                  <td className="pr-2 font-mono text-slate-500">{it.sku}</td>
-                  <td className="pr-2 font-medium">{eur(p.price)}</td>
-                  <td className="pr-2">
-                    {d === 0 ? <span className="text-slate-400">—</span>
+                  <td className="pr-2 font-mono text-zinc-500">{it.sku}</td>
+                  <td className="pr-2 font-mono tabular-nums font-medium">{eur(p.price)}</td>
+                  <td className="pr-2 font-mono tabular-nums">
+                    {d === 0 ? <span className="text-zinc-400">—</span>
                       : <span className={d > 0 ? "text-red-600" : "text-green-600"}>{d > 0 ? "+" : ""}{d.toFixed(1)}%</span>}
                   </td>
                   <td className="pr-2">
-                    <Pill tone={p.src === "receipt" ? "blue" : "slate"}>{p.src === "receipt" ? "recibo" : "manual"}</Pill>
+                    <Pill tone={p.src === "receipt" ? "cyan" : "zinc"}>{p.src === "receipt" ? "recibo" : "manual"}</Pill>
                   </td>
-                  <td className={stale ? "text-amber-600" : "text-slate-500"}>
+                  <td className={stale ? "text-amber-600" : "text-zinc-500"}>
                     {p.date}{stale && " · desatualizado"}
                   </td>
                 </tr>
@@ -1232,7 +1232,7 @@ function Suppliers({ prices, setPrices, selected, setSelected, flash }) {
       <Section title="Comparação entre fornecedores" desc="Melhor preço conhecido por artigo">
         <table className="w-full text-xs">
           <thead>
-            <tr className="text-left text-slate-500 border-b border-slate-200">
+            <tr className="text-left text-zinc-500 border-b border-zinc-200">
               <th className="py-1.5 pr-2">Artigo</th>
               {SUPPLIERS.map((sup) => <th key={sup.id} className="pr-2">{sup.name.split("—")[0].trim()}</th>)}
             </tr>
@@ -1243,17 +1243,17 @@ function Suppliers({ prices, setPrices, selected, setSelected, flash }) {
               if (!opts.length) return null;
               const best = Math.min(...opts.map((o) => o.price));
               return (
-                <tr key={it.id} className="border-b border-slate-100">
+                <tr key={it.id} className="border-b border-zinc-100">
                   <td className="py-1.5 pr-2">{it.name}</td>
                   {SUPPLIERS.map((sup) => {
                     const p = priceFor(sup.id, it.id, prices);
                     return (
-                      <td key={sup.id} className="pr-2">
+                      <td key={sup.id} className="pr-2 font-mono tabular-nums">
                         {p ? (
-                          <span className={p.price === best ? "text-green-700 font-semibold" : "text-slate-600"}>
+                          <span className={p.price === best ? "text-green-700 font-semibold" : "text-zinc-600"}>
                             {eur(p.price)}
                           </span>
-                        ) : <span className="text-slate-300">—</span>}
+                        ) : <span className="text-zinc-300">—</span>}
                       </td>
                     );
                   })}
@@ -1266,36 +1266,36 @@ function Suppliers({ prices, setPrices, selected, setSelected, flash }) {
 
       {scan && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg max-w-lg w-full max-h-full overflow-auto">
-            <div className="px-4 py-3 border-b border-slate-200">
+          <div className="bg-white rounded max-w-lg w-full max-h-full overflow-auto">
+            <div className="px-4 py-3 border-b border-zinc-200">
               <h3 className="text-sm font-semibold flex items-center gap-2"><Receipt className="w-4 h-4" />Recibo lido</h3>
-              <p className="text-xs text-slate-500 mt-0.5">
+              <p className="text-xs text-zinc-500 mt-0.5">
                 {SUPPLIERS.find((x) => x.id === scan.supplierId).name} · {scan.doc} · {scan.date}
               </p>
             </div>
             <div className="p-4 space-y-2">
-              <p className="text-xs text-slate-500">Confirme a correspondência antes de atualizar a tabela de preços.</p>
+              <p className="text-xs text-zinc-500">Confirme a correspondência antes de atualizar a tabela de preços.</p>
               {scan.lines.map((l, i) => {
                 const cur = l.itemId ? priceFor(scan.supplierId, l.itemId, prices) : null;
                 const d = cur ? ((l.price - cur.price) / cur.price) * 100 : null;
                 return (
-                  <div key={i} className={`border rounded p-2.5 ${l.itemId ? "border-slate-200" : "border-slate-100 bg-slate-50"}`}>
+                  <div key={i} className={`border rounded p-2.5 ${l.itemId ? "border-zinc-200" : "border-zinc-100 bg-zinc-50"}`}>
                     <div className="flex justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="text-xs font-mono text-slate-500 truncate">{l.desc}</div>
+                        <div className="text-xs font-mono text-zinc-500 truncate">{l.desc}</div>
                         <div className="text-sm">
-                          {l.itemId ? itemById(l.itemId).name : <span className="text-slate-400">sem correspondência — ignorar</span>}
+                          {l.itemId ? itemById(l.itemId).name : <span className="text-zinc-400">sem correspondência — ignorar</span>}
                         </div>
                       </div>
                       <div className="text-right shrink-0">
                         <div className="text-sm font-medium">{eur(l.price)}</div>
-                        <div className="text-xs text-slate-500">×{l.qty}</div>
+                        <div className="text-xs text-zinc-500">×{l.qty}</div>
                       </div>
                     </div>
                     {cur && (
-                      <div className="text-xs mt-1 pt-1 border-t border-slate-100">
+                      <div className="text-xs mt-1 pt-1 border-t border-zinc-100">
                         atual {eur(cur.price)} →{" "}
-                        <span className={d > 0 ? "text-red-600 font-medium" : d < 0 ? "text-green-600 font-medium" : "text-slate-500"}>
+                        <span className={d > 0 ? "text-red-600 font-medium" : d < 0 ? "text-green-600 font-medium" : "text-zinc-500"}>
                           {eur(l.price)} ({d > 0 ? "+" : ""}{d.toFixed(1)}%)
                         </span>
                       </div>
@@ -1304,9 +1304,9 @@ function Suppliers({ prices, setPrices, selected, setSelected, flash }) {
                 );
               })}
             </div>
-            <div className="px-4 py-3 border-t border-slate-200 flex justify-end gap-2">
-              <button onClick={() => setScan(null)} className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-900">Cancelar</button>
-              <button onClick={applyReceipt} className="px-3 py-1.5 bg-slate-900 text-white rounded text-sm font-medium">
+            <div className="px-4 py-3 border-t border-zinc-200 flex justify-end gap-2">
+              <button onClick={() => setScan(null)} className="px-3 py-1.5 text-sm text-zinc-600 hover:text-zinc-900">Cancelar</button>
+              <button onClick={applyReceipt} className="px-3 py-1.5 bg-zinc-900 text-white rounded text-sm font-medium">
                 Atualizar 3 preços
               </button>
             </div>
@@ -1337,22 +1337,22 @@ const METER_READS = {
 };
 
 const ITEM_TINT = {
-  material: "bg-blue-100 text-blue-700",
-  equipment: "bg-purple-100 text-purple-700",
+  material: "bg-cyan-100 text-cyan-700",
+  equipment: "bg-zinc-200 text-zinc-600",
   doc: "bg-amber-100 text-amber-700",
 };
 
 function BigBtn({ children, onClick, tone = "dark", disabled, icon: Icon }) {
   const tones = {
-    dark: "bg-slate-900 text-white active:bg-slate-700",
+    dark: "bg-zinc-900 text-white active:bg-zinc-700",
     green: "bg-green-600 text-white active:bg-green-700",
     red: "bg-red-600 text-white active:bg-red-700",
-    ghost: "bg-white text-slate-800 border-2 border-slate-300 active:bg-slate-100",
+    ghost: "bg-white text-zinc-800 border-2 border-zinc-300 active:bg-zinc-100",
   };
   return (
     <button onClick={onClick} disabled={disabled}
       className={`w-full py-4 px-4 rounded-xl text-lg font-semibold flex items-center justify-center gap-2 ${
-        disabled ? "bg-slate-200 text-slate-400" : tones[tone]
+        disabled ? "bg-zinc-200 text-zinc-400" : tones[tone]
       }`}>
       {Icon && <Icon className="w-6 h-6" />}{children}
     </button>
@@ -1387,14 +1387,14 @@ function PhoneShell({ jobs, prices }) {
   /* ------------------------- screens ------------------------- */
   const screens = {
     pin: (
-      <div className="flex flex-col h-full bg-slate-900 text-white p-6">
+      <div className="flex flex-col h-full bg-zinc-900 text-white p-6">
         <div className="flex-1 flex flex-col items-center justify-center">
-          <Radio className="w-10 h-10 text-blue-400" />
+          <Radio className="w-10 h-10 text-cyan-400" />
           <div className="mt-3 text-lg font-semibold">Olá, Rui</div>
-          <div className="text-sm text-slate-400">Código de 4 dígitos</div>
+          <div className="text-sm text-zinc-400">Código de 4 dígitos</div>
           <div className="flex gap-3 mt-5">
             {[0, 1, 2, 3].map((i) => (
-              <div key={i} className={`w-4 h-4 rounded-full ${i < pin.length ? "bg-blue-400" : "bg-slate-700"}`} />
+              <div key={i} className={`w-4 h-4 rounded-full ${i < pin.length ? "bg-cyan-400" : "bg-zinc-700"}`} />
             ))}
           </div>
         </div>
@@ -1407,19 +1407,19 @@ function PhoneShell({ jobs, prices }) {
                 setPin(next);
                 if (next.length === 4) setTimeout(() => { setPin(""); go("home"); }, 200);
               }}
-              className={`py-4 rounded-xl text-2xl font-medium ${n === null ? "" : "bg-slate-800 active:bg-slate-700"}`}>
+              className={`py-4 rounded-xl text-2xl font-medium ${n === null ? "" : "bg-zinc-800 active:bg-zinc-700"}`}>
               {n}
             </button>
           ))}
         </div>
-        <p className="text-xs text-slate-500 text-center mt-4">Sem palavra-passe. Telemóvel associado ao técnico.</p>
+        <p className="text-xs text-zinc-500 text-center mt-4">Sem palavra-passe. Telemóvel associado ao técnico.</p>
       </div>
     ),
 
     home: (
-      <div className="flex flex-col h-full bg-slate-50">
-        <div className="bg-slate-900 text-white px-5 py-4">
-          <div className="text-xs text-slate-400">Segunda, 17 de agosto</div>
+      <div className="flex flex-col h-full bg-zinc-50">
+        <div className="bg-zinc-900 text-white px-5 py-4">
+          <div className="text-xs text-zinc-400">Segunda, 17 de agosto</div>
           <div className="text-xl font-semibold">Bom dia, Rui</div>
         </div>
         <div className="p-4 space-y-3 flex-1 overflow-auto">
@@ -1432,12 +1432,12 @@ function PhoneShell({ jobs, prices }) {
             </div>
           </button>
 
-          <div className="text-xs font-semibold text-slate-500 uppercase pt-2">Hoje</div>
-          <div className="bg-white rounded-xl border-2 border-slate-200 p-4">
+          <div className="text-xs font-semibold text-zinc-500 uppercase pt-2">Hoje</div>
+          <div className="bg-white rounded-xl border-2 border-zinc-200 p-4">
             <div className="text-2xl font-bold">09:00</div>
             <div className="text-lg font-semibold mt-1 leading-tight">Antena TDT — moradia</div>
-            <div className="text-base text-slate-600 mt-1">{job.client}</div>
-            <div className="text-base text-slate-600">Campo de Ourique, Lisboa</div>
+            <div className="text-base text-zinc-600 mt-1">{job.client}</div>
+            <div className="text-base text-zinc-600">Campo de Ourique, Lisboa</div>
             <div className="mt-4 space-y-2">
               <BigBtn onClick={() => { setIdx(0); setAnswers({}); go("prep"); }} icon={Package}>
                 Ver o que levar
@@ -1451,7 +1451,7 @@ function PhoneShell({ jobs, prices }) {
 
     van: (
       <PhonePage title="Carrinha 1" onBack={() => go("home")}>
-        <p className="text-base text-slate-600">
+        <p className="text-base text-zinc-600">
           Verificada {VAN_AUDIT.date}. Próxima verificação {VAN_AUDIT.nextDue}.
         </p>
         <div className="space-y-3 mt-4">
@@ -1465,7 +1465,7 @@ function PhoneShell({ jobs, prices }) {
             </div>
           ))}
         </div>
-        <p className="text-sm text-slate-500 mt-4">
+        <p className="text-sm text-zinc-500 mt-4">
           O escritório já sabe. Nada a fazer aqui — verifique só se já foi resolvido.
         </p>
       </PhonePage>
@@ -1479,12 +1479,12 @@ function PhoneShell({ jobs, prices }) {
           <div className="px-4 pt-4">
             <div className="flex items-center justify-between">
               <button onClick={() => (idx > 0 ? setIdx(idx - 1) : go("home"))} className="p-2 -ml-2">
-                <ChevronLeft className="w-6 h-6 text-slate-500" />
+                <ChevronLeft className="w-6 h-6 text-zinc-500" />
               </button>
-              <div className="text-lg font-bold text-slate-700">{idx + 1} de {list.length}</div>
+              <div className="text-lg font-bold text-zinc-700">{idx + 1} de {list.length}</div>
             </div>
-            <div className="mt-2 h-2 bg-slate-200 rounded-full overflow-hidden">
-              <div className="h-full bg-blue-600" style={{ width: `${((idx) / list.length) * 100}%` }} />
+            <div className="mt-2 h-2 bg-zinc-200 rounded-full overflow-hidden">
+              <div className="h-full bg-cyan-600" style={{ width: `${((idx) / list.length) * 100}%` }} />
             </div>
           </div>
 
@@ -1493,8 +1493,8 @@ function PhoneShell({ jobs, prices }) {
               <CatIcon className="w-20 h-20" />
             </div>
             <div className="mt-6 text-2xl font-bold leading-tight">{c.label}</div>
-            <div className="mt-3 text-5xl font-black text-slate-900">{c.qty}</div>
-            <div className="text-base text-slate-500">
+            <div className="mt-3 text-5xl font-mono font-black tabular-nums text-zinc-900">{c.qty}</div>
+            <div className="text-base text-zinc-500">
               {c.itemId ? itemById(c.itemId).unit : "documento"}
             </div>
           </div>
@@ -1527,28 +1527,28 @@ function PhoneShell({ jobs, prices }) {
             {missing.map((m) => (
               <div key={m.id} className="flex items-center gap-3 p-3 rounded-xl bg-red-50 border-2 border-red-200">
                 <XCircle className="w-6 h-6 text-red-600 shrink-0" />
-                <span className="text-base font-medium text-slate-900">{m.qty}× {m.label}</span>
+                <span className="text-base font-medium text-zinc-900">{m.qty}× {m.label}</span>
               </div>
             ))}
           </div>
           {missingMat.length > 0 && (() => {
             const best = sourcingOptions(missingMat[0].itemId, prices)[0];
             return (
-              <div className="mt-4 p-4 rounded-xl bg-blue-50 border-2 border-blue-300">
-                <div className="text-sm font-semibold text-blue-900 uppercase">Passar por</div>
+              <div className="mt-4 p-4 rounded-xl bg-cyan-50 border-2 border-cyan-300">
+                <div className="text-sm font-semibold text-cyan-900 uppercase">Passar por</div>
                 <div className="text-xl font-bold mt-1 leading-tight">{best.supplier.name.split("—")[0].trim()}</div>
-                <div className="text-base text-slate-700">{best.supplier.address.split(",")[0]}</div>
+                <div className="text-base text-zinc-700">{best.supplier.address.split(",")[0]}</div>
                 <div className="mt-2 flex items-center gap-2 text-base">
                   {best.state.open
                     ? <><CheckCircle2 className="w-5 h-5 text-green-700" /><span className="text-green-800 font-semibold">{best.state.text}</span></>
                     : <><XCircle className="w-5 h-5 text-red-700" /><span className="text-red-800 font-semibold">{best.state.text}</span></>}
-                  <span className="text-slate-500">· {best.supplier.distanceKm} km</span>
+                  <span className="text-zinc-500">· {best.supplier.distanceKm} km</span>
                 </div>
                 <div className="mt-3"><BigBtn icon={Navigation}>Levar-me lá</BigBtn></div>
               </div>
             );
           })()}
-          <p className="text-sm text-slate-500 mt-4 text-center">O escritório foi avisado automaticamente.</p>
+          <p className="text-sm text-zinc-500 mt-4 text-center">O escritório foi avisado automaticamente.</p>
           <div className="mt-3"><BigBtn tone="ghost" onClick={() => go("site")}>Cheguei ao local</BigBtn></div>
         </div>
       </div>
@@ -1556,23 +1556,23 @@ function PhoneShell({ jobs, prices }) {
 
     site: (
       <PhonePage title="No local" onBack={() => go("home")}>
-        <div className="p-4 rounded-xl bg-blue-50 border-2 border-blue-300 text-center">
-          <div className="text-sm text-blue-900 font-semibold uppercase">A contar</div>
-          <div className="text-4xl font-black text-blue-900">2h 14</div>
-          <div className="text-sm text-blue-800">de {job.quotedHours}h previstas</div>
+        <div className="p-4 rounded-xl bg-cyan-50 border-2 border-cyan-300 text-center">
+          <div className="text-sm text-cyan-900 font-semibold uppercase">A contar</div>
+          <div className="text-4xl font-mono font-black tabular-nums text-cyan-900">2h 14</div>
+          <div className="text-sm text-cyan-800">de {job.quotedHours}h previstas</div>
         </div>
         <div className="mt-4 space-y-2">
           {["Fotografar antes", "Montar mastro", "Orientar antena", "Passar cabo", "Medir nas tomadas", "Fotografar depois"]
             .map((s, i) => (
               <div key={i} className={`flex items-center gap-3 p-4 rounded-xl border-2 ${
-                i < 4 ? "border-slate-200 bg-slate-50" : "border-slate-300 bg-white"
+                i < 4 ? "border-zinc-200 bg-zinc-50" : "border-zinc-300 bg-white"
               }`}>
                 <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
-                  i < 4 ? "bg-green-600" : "bg-slate-200"
+                  i < 4 ? "bg-green-600" : "bg-zinc-200"
                 }`}>
-                  {i < 4 ? <CheckCircle2 className="w-5 h-5 text-white" /> : <span className="text-sm font-bold text-slate-600">{i + 1}</span>}
+                  {i < 4 ? <CheckCircle2 className="w-5 h-5 text-white" /> : <span className="text-sm font-bold text-zinc-600">{i + 1}</span>}
                 </div>
-                <span className={`text-base ${i < 4 ? "text-slate-400 line-through" : "font-medium"}`}>{s}</span>
+                <span className={`text-base ${i < 4 ? "text-zinc-400 line-through" : "font-medium"}`}>{s}</span>
               </div>
             ))}
         </div>
@@ -1600,7 +1600,7 @@ function PhoneShell({ jobs, prices }) {
                 onClick={() => setVals({ ...vals, [name]: { t1: "", t2: "" } })}>
                 Escrever à mão
               </BigBtn>
-              <p className="text-sm text-slate-500 text-center pt-2">
+              <p className="text-sm text-zinc-500 text-center pt-2">
                 Aponte a câmara ao ecrã do medidor. Se não der, escreva à mão — dá no mesmo.
               </p>
             </div>
@@ -1608,7 +1608,7 @@ function PhoneShell({ jobs, prices }) {
 
           {reading && (
             <div className="mt-16 flex flex-col items-center">
-              <Loader2 className="w-12 h-12 text-blue-600 animate-spin" />
+              <Loader2 className="w-12 h-12 text-cyan-600 animate-spin" />
               <div className="mt-4 text-lg font-medium">A ler o ecrã…</div>
             </div>
           )}
@@ -1619,18 +1619,18 @@ function PhoneShell({ jobs, prices }) {
                 {results.map((x, i) => (
                   <div key={i} className={`flex items-center gap-3 p-3 rounded-xl border-2 ${
                     x.r === "pass" ? "border-green-300 bg-green-50"
-                      : x.r === "fail" ? "border-red-400 bg-red-50" : "border-slate-300"
+                      : x.r === "fail" ? "border-red-400 bg-red-50" : "border-zinc-300"
                   }`}>
                     {x.r === "pass" ? <CheckCircle2 className="w-6 h-6 text-green-700 shrink-0" />
                       : x.r === "fail" ? <XCircle className="w-6 h-6 text-red-700 shrink-0" />
-                        : <div className="w-6 h-6 rounded-full border-2 border-slate-300 shrink-0" />}
+                        : <div className="w-6 h-6 rounded-full border-2 border-zinc-300 shrink-0" />}
                     <div className="flex-1 min-w-0">
                       <div className="text-base font-medium leading-tight">{x.t.label}</div>
-                      <div className="text-sm text-slate-500">Deve ser {threshLabel(x.t)}</div>
+                      <div className="text-sm text-zinc-500">Deve ser {threshLabel(x.t)}</div>
                     </div>
                     <input value={x.v} inputMode="decimal"
                       onChange={(e) => setVals({ ...vals, [name]: { ...v, [x.t.id]: e.target.value } })}
-                      className="w-24 px-2 py-2 text-lg font-bold text-right border-2 border-slate-300 rounded-lg" />
+                      className="w-24 px-2 py-2 text-lg font-mono font-bold tabular-nums text-right border-2 border-zinc-300 rounded" />
                   </div>
                 ))}
               </div>
@@ -1654,7 +1654,7 @@ function PhoneShell({ jobs, prices }) {
 
     voice: (
       <PhonePage title="Como correu?" onBack={() => go("tests")}>
-        <p className="text-base text-slate-600">
+        <p className="text-base text-zinc-600">
           Conte pelas suas palavras. Não escolha categorias — o escritório trata disso.
         </p>
         <div className="mt-8 flex flex-col items-center">
@@ -1666,7 +1666,7 @@ function PhoneShell({ jobs, prices }) {
               } else { setRecording(true); setNote(""); }
             }}
             className={`w-32 h-32 rounded-full flex items-center justify-center ${
-              recording ? "bg-red-600 animate-pulse" : "bg-slate-900"
+              recording ? "bg-red-600 animate-pulse" : "bg-zinc-900"
             }`}>
             <Mic className="w-14 h-14 text-white" />
           </button>
@@ -1675,8 +1675,8 @@ function PhoneShell({ jobs, prices }) {
           </div>
         </div>
         {note && (
-          <div className="mt-6 p-4 rounded-xl bg-slate-100 border-2 border-slate-200">
-            <div className="text-xs font-semibold text-slate-500 uppercase">Transcrito</div>
+          <div className="mt-6 p-4 rounded-xl bg-zinc-100 border-2 border-zinc-200">
+            <div className="text-xs font-semibold text-zinc-500 uppercase">Transcrito</div>
             <p className="text-base mt-1">{note}</p>
           </div>
         )}
@@ -1718,33 +1718,33 @@ function PhoneShell({ jobs, prices }) {
   return (
     <div className="max-w-6xl mx-auto px-4 py-6 flex flex-col lg:flex-row gap-8 justify-center items-start">
       <div className="mx-auto shrink-0">
-        <div className="rounded-3xl border-8 border-slate-900 overflow-hidden bg-white shadow-xl"
+        <div className="rounded-3xl border-8 border-zinc-900 overflow-hidden bg-white shadow-xl"
           style={{ width: 380, height: 740 }}>
           {screens[screen]}
         </div>
-        <div className="text-center text-xs text-slate-400 mt-2">
+        <div className="text-center text-xs text-zinc-400 mt-2">
           Ecrã: <span className="font-mono">{screen}</span> · toque para navegar
         </div>
       </div>
 
       <div className="flex-1 min-w-0 max-w-md">
         <h2 className="text-base font-semibold">Porquê assim</h2>
-        <p className="text-sm text-slate-600 mt-1">
+        <p className="text-sm text-zinc-600 mt-1">
           O técnico não falha a tocar no ecrã. Falha a ler uma lista e a mapeá-la ao mundo real.
         </p>
         <div className="mt-4 space-y-2">
           {principles.map(([s, t, d], i) => (
             <div key={i}
-              className={`p-3 rounded-lg border ${screen === s ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-white"}`}>
+              className={`p-3 rounded border ${screen === s ? "border-cyan-400 bg-cyan-50" : "border-zinc-200 bg-white"}`}>
               <div className="text-sm font-medium flex items-center gap-2">
                 {t}
-                {screen === s && <Pill tone="blue">neste ecrã</Pill>}
+                {screen === s && <Pill tone="cyan">neste ecrã</Pill>}
               </div>
-              <div className="text-xs text-slate-600 mt-0.5">{d}</div>
+              <div className="text-xs text-zinc-600 mt-0.5">{d}</div>
             </div>
           ))}
         </div>
-        <div className="mt-4 p-3 rounded-lg bg-amber-50 border border-amber-200">
+        <div className="mt-4 p-3 rounded bg-amber-50 border border-amber-200">
           <div className="text-sm font-medium text-amber-900">O compromisso a vigiar</div>
           <p className="text-xs text-amber-800 mt-1">
             Nunca acrescentar um botão "está tudo bem". Poupa 5 toques e destrói os dados de que
@@ -1759,8 +1759,8 @@ function PhoneShell({ jobs, prices }) {
 function PhonePage({ title, onBack, children }) {
   return (
     <div className="flex flex-col h-full bg-white">
-      <div className="flex items-center gap-2 px-3 py-3 border-b-2 border-slate-100 shrink-0">
-        <button onClick={onBack} className="p-2 -ml-1"><ChevronLeft className="w-6 h-6 text-slate-600" /></button>
+      <div className="flex items-center gap-2 px-3 py-3 border-b-2 border-zinc-100 shrink-0">
+        <button onClick={onBack} className="p-2 -ml-1"><ChevronLeft className="w-6 h-6 text-zinc-600" /></button>
         <span className="text-base font-semibold">{title}</span>
       </div>
       <div className="flex-1 overflow-auto p-4">{children}</div>
@@ -1773,9 +1773,9 @@ function PhonePage({ title, onBack, children }) {
 function Notes() {
   const block = (title, items) => (
     <Section title={title}>
-      <ul className="space-y-1.5 text-sm text-slate-700">
+      <ul className="space-y-1.5 text-sm text-zinc-700">
         {items.map((t, i) => (
-          <li key={i} className="flex gap-2"><span className="text-slate-400">·</span><span>{t}</span></li>
+          <li key={i} className="flex gap-2"><span className="text-zinc-400">·</span><span>{t}</span></li>
         ))}
       </ul>
     </Section>
@@ -1783,9 +1783,9 @@ function Notes() {
 
   return (
     <div className="space-y-5">
-      <div className="bg-white rounded-lg border border-slate-200 p-4">
+      <div className="bg-white rounded border border-zinc-200 p-4">
         <h2 className="text-base font-semibold">Notas do modelo</h2>
-        <p className="text-sm text-slate-600 mt-1">
+        <p className="text-sm text-zinc-600 mt-1">
           Protótipo com dados fictícios. Sem backend, sem persistência — recarregar repõe o estado inicial.
         </p>
       </div>

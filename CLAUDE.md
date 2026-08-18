@@ -24,6 +24,10 @@ re-litigation; it survived two rounds of design review already.
    test protocols, verified against Manual ITED 4.ª ed.)
 8. `apps/api/README.md` — Phase 1's actual implementation: how to run it, how to prove
    the exit criterion, what's substituted from the architecture doc and why
+9. `05-phase2-job-loop.md`, `06-phase3-compliance.md`, `07-phase4-cost-intelligence.md` —
+   concrete, file-level build plans for the three remaining phases, written against
+   Phase 1's actual code (not just the architecture doc), each ending in its own exit
+   criterion in the same proof-script style as Phase 1's
 
 ## Before you write application code
 
@@ -129,24 +133,36 @@ quotes/BOM, dispatch gate, execution steps, photos, close-out, compliance
 (REF/termo/deadlines), dashboard, the actual web (Next.js) or mobile (Expo) clients.
 Those are Phase 2/3/4, below.
 
-### Phase 2 — the job loop
+### Phase 2 — the job loop — designed, not yet built
 Quote → BOM → job creation with resolved checklist snapshot → readiness gate → dispatch
 → execution steps → photos → close-out. This is the loop every tenant uses regardless of
 compliance profile — build and ship it before any compliance-tier work.
 
 *Exit criterion:* a technician completes the full loop on the phone UI, offline, zero
-typed text (PRD §8) — matching the phone flow already validated in the prototype.
+typed text (PRD §8) — matching the phone flow already validated in the prototype. Full
+build plan, file by file, against Phase 1's actual code: `05-phase2-job-loop.md`. One
+scoping call worth flagging here: F13/F14 test-result capture starts in this phase, not
+Phase 3, because both protocols are already verified and activatable
+(`seed.sql`/`verify-seed.mjs`) and the prototype's settled AAR screen captures them
+unconditionally — see that doc §7 for the full reasoning.
 
-### Phase 3 — compliance
+### Phase 3 — compliance — designed, not yet built
 Test protocols (blocked on the verification gate above), REF assembly, termo tracking,
 statutory deadlines with a real Portuguese working-day holiday calendar (not a
 hand-rolled one — use a maintained library/API and confirm which regional holidays
-apply, since some are municipal).
+apply, since some are municipal). Full build plan: `06-phase3-compliance.md`, including
+the one real remaining blocker (F11's Tabela 6.1 hasn't been source-read yet — F12 can be
+seeded today from values already in `forms-and-procedures-spec.md` §3.4) and a concrete
+library recommendation for the holiday calendar (`date-holidays`, npm).
 
-### Phase 4 — cost intelligence
+### Phase 4 — cost intelligence — designed, not yet built
 Site survey (F01), receipt OCR (buy a vendor, test on ~20 real receipts before
 committing — architecture §6), supplier price comparison, the dashboard. Deliberately
-last: needs 30+ real closed jobs before any of its numbers mean anything.
+last: needs 30+ real closed jobs before any of its numbers mean anything — that gate is
+on trusting the dashboard's conclusions, not on the code existing; see
+`07-phase4-cost-intelligence.md` for why most of this phase's endpoints are thin reads
+over views the schema already ships, and for what's deliberately left as an interface
+rather than a vendor choice (receipt OCR, Google Places) pending real-world evaluation.
 
 ## What to run in parallel with Phase 1, not after it
 
