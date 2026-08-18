@@ -1,7 +1,11 @@
-node_modules/
-dist/
-.data/
+!.env.example
 *.local
+.claude/
+.data/
 .env
 .env.*
-!.env.example
+.next/
+dist/
+next-env.d.ts
+node_modules/
+tsconfig.tsbuildinfo

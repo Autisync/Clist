@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Shared error-affordance animation for phone-facing screens (PIN entry,
+ * etc.) — a short horizontal shake paired with the existing red-tinted
+ * error styling convention (bg-red-50/border-red-300/text-red-800, see
+ * fieldready-prototype.jsx), never color/motion alone.
+ */
+@keyframes fr-shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px); }
+  30%, 50%, 70% { transform: translateX(-4px); }
+  40%, 60% { transform: translateX(4px); }
+}
+
+.animate-fr-shake {
+  animation: fr-shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
