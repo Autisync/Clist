@@ -1,0 +1,20 @@
+{
+  "name": "fieldready",
+  "private": true,
+  "version": "0.1.0",
+  "description": "FieldReady monorepo — see CLAUDE.md for the project brief and build order.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run dev --workspace=apps/api",
+    "build": "npm run build --workspace=packages/core --workspace=apps/api",
+    "proof:phase1": "npm run proof --workspace=apps/api",
+    "verify:schema": "node verify-schema.mjs 03-schema.sql",
+    "verify:seed": "node verify-seed.mjs 03-schema.sql seed.sql"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
