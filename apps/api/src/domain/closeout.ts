@@ -54,7 +54,24 @@ export async function submitCloseout(
     ]
   );
 
-  await tx.query(`update job set status = 'closed' where id = $1 and tenant_id = $2;`, [jobId, tenantId]);
+  // completed_at starts the termo 10-working-day clock (03-schema.sql §7's
+  // own comment, 06-phase3-compliance.md §6) and is normally stamped by a
+  // separate POST /jobs/:id/complete call first (the office two-step flow).
+  // The technician phone flow (prep -> site -> tests -> voice -> done) has
+  // no distinct "mark complete" tap -- fieldready-prototype.jsx's settled
+  // screens go straight from tests to voice to done, and CLAUDE.md protects
+  // that flow from re-litigation -- so closeout is the only moment this
+  // path ever reaches. Left as a hard requirement of a prior /complete call,
+  // every phone-closed job would have completed_at permanently null and its
+  // statutory deadline clock would never start. coalesce() preserves the
+  // office flow's earlier, more precise timestamp when it exists, and fills
+  // the gap for the phone flow when it doesn't -- found live-testing this
+  // exact path, not a hypothetical.
+  await tx.query(
+    `update job set status = 'closed', completed_at = coalesce(completed_at, now())
+     where id = $1 and tenant_id = $2;`,
+    [jobId, tenantId]
+  );
 
   return { kind: "ok", row: inserted.rows[0] };
 }
