@@ -173,14 +173,34 @@ Phase 3, because both protocols are already verified and activatable
 (`seed.sql`/`verify-seed.mjs`) and the prototype's settled AAR screen captures them
 unconditionally — see that doc §7 for the full reasoning.
 
+**The client now exists too:** `apps/web` (Next.js, `/office/*` desktop +
+`/field/*` offline-first technician phone, one App Router codebase per
+architecture §2), wired to this phase's API — not a separate phase, since it's
+what actually proves PRD §8's exit criterion ("a technician completes the full
+loop on the phone UI") rather than just the API supporting it. Includes a real
+offline sync queue (IndexedDB outbox, architecture §4 Option B) using the
+exact idempotent mutation contract above. See `apps/web/README.md` for the
+full rundown, its own proof (`npm run smoke:web`, 22/22 checks), and a real
+bug it found and fixed in the API along the way (`domain/closeout.ts` never
+set `completed_at` when closed via the phone flow, which has no separate
+"mark complete" step — silently breaking Phase 3's deadline clock before
+Phase 3 was even built). Dashboard analytics and Suppliers are honest
+placeholders in this client, not faked — both need Phase 4.
+
 ### Phase 3 — compliance — designed, not yet built
-Test protocols (blocked on the verification gate above), REF assembly, termo tracking,
+Test protocols (F11/F12, the remainder beyond F13/F14), REF assembly, termo tracking,
 statutory deadlines with a real Portuguese working-day holiday calendar (not a
 hand-rolled one — use a maintained library/API and confirm which regional holidays
-apply, since some are municipal). Full build plan: `06-phase3-compliance.md`, including
-the one real remaining blocker (F11's Tabela 6.1 hasn't been source-read yet — F12 can be
-seeded today from values already in `forms-and-procedures-spec.md` §3.4) and a concrete
-library recommendation for the holiday calendar (`date-holidays`, npm).
+apply, since some are municipal). Full build plan: `06-phase3-compliance.md`.
+
+F11/F12 are both sourced now (18 August) — see `ited-ref-mapping.md` §7A.3's addendum.
+F12's real numbers were already in `forms-and-procedures-spec.md` §3.4. F11 turned out
+not to be a numeric-limits table at all: Tabela 6.1 (pares de cobre) defers entirely to
+the external EN 50173 standard's Class E parameters, evaluated by the cable certifier's
+own pass/fail — not an ITED-authored number. Seeding it honestly needs a schema addition
+(`TestProtocolTest.dir: "external_pass_fail"`, no `min`/`max`), not a fabricated
+threshold forced into the existing shape; see `06-phase3-compliance.md` §2 for the exact
+change. Concrete library recommendation for the holiday calendar: `date-holidays`, npm.
 
 ### Phase 4 — cost intelligence — designed, not yet built
 Site survey (F01), receipt OCR (buy a vendor, test on ~20 real receipts before
