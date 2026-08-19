@@ -691,6 +691,7 @@ type TestOutcome = "pass" | "fail" | "pending" | "na";
 function threshLabel(t: TestProtocolTest): string {
   if (t.dir === "range") return `${t.min}–${t.max} ${t.unit}`;
   if (t.dir === "min") return `≥ ${t.min} ${t.unit}`;
+  if (t.dir === "external_pass_fail") return "Pass/Fail (EN 50173 Classe E)";
   return `≤ ${t.max} ${t.unit}`;
 }
 
@@ -835,25 +836,55 @@ function AARTab({
                       const cell = cells[key];
                       return (
                         <td key={t.id} className="pr-2 py-1.5 align-top">
-                          <input
-                            type="number"
-                            step="any"
-                            inputMode="decimal"
-                            defaultValue={cell?.value ?? ""}
-                            disabled={cell?.saving}
-                            onBlur={(e) => {
-                              const v = e.target.value.trim();
-                              if (v === "") return;
-                              submitTestResult(outlet, t, v);
-                            }}
-                            className={`w-20 px-1.5 py-1 rounded border font-mono tabular-nums text-xs ${
-                              cell?.outcome === "fail"
-                                ? "border-red-400 bg-red-50 text-red-800 font-medium"
-                                : cell?.outcome === "pass"
-                                  ? "border-green-300 bg-green-50 text-green-800"
-                                  : "border-zinc-300"
-                            }`}
-                          />
+                          {t.dir === "external_pass_fail" ? (
+                            // No numeric threshold exists for this test (the
+                            // certifying instrument's own verdict IS the
+                            // measured value, ited-ref-mapping.md §7A.3) — a
+                            // number input would reject "pass"/"fail"
+                            // outright, so this renders as a two-button
+                            // toggle instead, matching the pass/fail
+                            // icon+word+color convention used elsewhere
+                            // rather than a free-text field.
+                            <div className="flex gap-1">
+                              {(["pass", "fail"] as const).map((v) => (
+                                <button
+                                  key={v}
+                                  type="button"
+                                  disabled={cell?.saving}
+                                  onClick={() => submitTestResult(outlet, t, v)}
+                                  className={`px-2 py-1 rounded border text-xs font-medium ${
+                                    cell?.outcome === v
+                                      ? v === "pass"
+                                        ? "border-green-400 bg-green-50 text-green-800"
+                                        : "border-red-400 bg-red-50 text-red-800"
+                                      : "border-zinc-300 text-zinc-500"
+                                  }`}
+                                >
+                                  {v === "pass" ? "Pass" : "Fail"}
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <input
+                              type="number"
+                              step="any"
+                              inputMode="decimal"
+                              defaultValue={cell?.value ?? ""}
+                              disabled={cell?.saving}
+                              onBlur={(e) => {
+                                const v = e.target.value.trim();
+                                if (v === "") return;
+                                submitTestResult(outlet, t, v);
+                              }}
+                              className={`w-20 px-1.5 py-1 rounded border font-mono tabular-nums text-xs ${
+                                cell?.outcome === "fail"
+                                  ? "border-red-400 bg-red-50 text-red-800 font-medium"
+                                  : cell?.outcome === "pass"
+                                    ? "border-green-300 bg-green-50 text-green-800"
+                                    : "border-zinc-300"
+                              }`}
+                            />
+                          )}
                           <div className="mt-1">
                             {cell?.saving ? (
                               <span className="text-zinc-400 flex items-center gap-1">

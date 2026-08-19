@@ -18,6 +18,17 @@ import os from "node:os";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../");
+// Resolve the real `next` binary directly rather than going through `npx`.
+// `npx next start` makes npx the parent and next-server a grandchild --
+// SIGKILLing the npx PID (killHard()'s whole mechanism) does not reliably
+// take the grandchild with it, so it survives as an orphan (reparented to
+// PID 1) squatting on WEB_PORT. Confirmed happening in practice: it let a
+// later run's own spawn silently validate against a stale leftover server
+// instead of the one it just started. Spawning the binary directly makes
+// it the immediate child SIGKILL actually reaches.
+// npm workspaces hoist shared deps' bin symlinks to the repo root's
+// node_modules/.bin, not into apps/web/node_modules/.bin.
+const NEXT_BIN = path.join(REPO_ROOT, "node_modules/.bin/next");
 const RUNTIME_DIR = path.join(os.tmpdir(), "fieldready-smoke-web");
 const API_PORT = 3913;
 const WEB_PORT = 3005;
@@ -97,8 +108,8 @@ function spawnApi() {
 function spawnWeb() {
   return new Promise((resolve, reject) => {
     const proc = spawn(
-      "npx",
-      ["next", "start", "-p", String(WEB_PORT)],
+      NEXT_BIN,
+      ["start", "-p", String(WEB_PORT)],
       {
         cwd: path.join(REPO_ROOT, "apps/web"),
         env: {
@@ -157,7 +168,7 @@ async function main() {
   // apps/api port, which was never 3001 here), so it's called out
   // explicitly rather than left as an implicit assumption.
   await new Promise((resolve, reject) => {
-    const build = spawn("npx", ["next", "build"], {
+    const build = spawn(NEXT_BIN, ["build"], {
       cwd: path.join(REPO_ROOT, "apps/web"),
       env: { ...process.env, FIELDREADY_API_ORIGIN: API_BASE },
       stdio: "inherit",

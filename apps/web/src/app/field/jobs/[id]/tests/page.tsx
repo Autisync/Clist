@@ -65,6 +65,7 @@ type LoadState =
 function threshLabel(t: TestProtocolBody["tests"][number]): string {
   if (t.dir === "range") return `${t.min}–${t.max} ${t.unit}`;
   if (t.dir === "min") return `≥ ${t.min} ${t.unit}`;
+  if (t.dir === "external_pass_fail") return "Pass/Fail (certificador)";
   return `≤ ${t.max} ${t.unit}`;
 }
 
@@ -230,13 +231,41 @@ export default function TestsPage() {
                   <div className="text-base font-medium leading-tight">{t.label}</div>
                   <div className="text-sm text-zinc-500">Deve ser {threshLabel(t)}</div>
                 </div>
-                <input
-                  value={raw}
-                  inputMode="decimal"
-                  onChange={(e) => setVal(t.id, e.target.value)}
-                  aria-label={`Valor medido — ${t.label}`}
-                  className="w-24 px-2 py-2 text-lg font-mono font-bold tabular-nums text-right border-2 border-zinc-300 rounded"
-                />
+                {t.dir === "external_pass_fail" ? (
+                  // No number to type — the certifying instrument's own
+                  // verdict IS the value (ited-ref-mapping.md §7A.3). A
+                  // numeric keypad popping up for this would be broken,
+                  // ungloveable UX, so this is two big tap targets instead,
+                  // matching the rest of this screen's glove-friendly
+                  // convention rather than a text field.
+                  <div className="flex gap-2 shrink-0">
+                    {(["pass", "fail"] as const).map((v) => (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => setVal(t.id, v)}
+                        aria-label={`${v === "pass" ? "Passa" : "Falha"} — ${t.label}`}
+                        className={`px-4 min-h-[44px] rounded-lg text-sm font-semibold border-2 ${
+                          raw === v
+                            ? v === "pass"
+                              ? "border-green-400 bg-green-100 text-green-800"
+                              : "border-red-400 bg-red-100 text-red-800"
+                            : "border-zinc-300 bg-white text-zinc-600 active:bg-zinc-100"
+                        }`}
+                      >
+                        {v === "pass" ? "Passa" : "Falha"}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <input
+                    value={raw}
+                    inputMode="decimal"
+                    onChange={(e) => setVal(t.id, e.target.value)}
+                    aria-label={`Valor medido — ${t.label}`}
+                    className="w-24 px-2 py-2 text-lg font-mono font-bold tabular-nums text-right border-2 border-zinc-300 rounded"
+                  />
+                )}
               </div>
 
               <div className="mt-2 flex items-center gap-2">

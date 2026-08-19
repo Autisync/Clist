@@ -36,13 +36,17 @@ import { JobDetail } from "./_components/job-detail";
 // 03-schema.sql §4a: "execution_steps: { steps: [{ order, label }] }".
 export type ExecutionSnapshot = { steps: { order: number; label: string }[] } | null;
 
-// Tabela 6.12/6.17-shaped test protocol, frozen onto the job row at
-// creation time — packages/core/src/template.ts's TestProtocolBody/Test.
+// Tabela 6.1/6.7/6.9/6.12/6.17-shaped test protocol, frozen onto the job row
+// at creation time — packages/core/src/template.ts's TestProtocolBody/Test.
+// "external_pass_fail" (Phase 3, F11/Tabela 6.1) added here to match —
+// letting this drift from the real shared type is exactly how threshLabel()
+// broke for F11 tests before this fix (TypeScript couldn't catch a mismatch
+// this local copy hid from it).
 export type TestProtocolTest = {
   id: string;
   label: string;
   unit: string;
-  dir: "range" | "min" | "max";
+  dir: "range" | "min" | "max" | "external_pass_fail";
   min?: number;
   max?: number;
   recommended?: number;
