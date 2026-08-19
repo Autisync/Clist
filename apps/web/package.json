@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@fieldready/core": "0.1.0",
+    "idb": "^8.0.0",
     "lucide-react": "^0.475.0",
     "next": "^15.1.0",
     "react": "^19.0.0",
