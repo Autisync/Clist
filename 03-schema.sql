@@ -62,6 +62,27 @@ comment on column tenant.compliance_profile is
   'referenced test_protocol template_version to carry verified_by (see §12 gate).';
 
 -- ============================================================================
+-- 2a. Tenancy — Phase 3 addition (06-phase3-compliance.md §6)
+--
+-- F17 statutory deadlines are computed against a real PT working-day
+-- calendar (date-holidays, `new Holidays('PT', '<subdivision-code>')`),
+-- which needs to know which município a tenant is based in to apply that
+-- município's local holidays on top of national ones — national-only is
+-- close but not correct for a tenant whose area observes a municipal
+-- holiday the statute's working-day count should skip. Nullable: no
+-- subdivision is assumed, so a tenant with no municipality set gets
+-- national-holidays-only deadline arithmetic, not a wrong guess.
+-- ============================================================================
+
+alter table tenant add column municipality text;
+
+comment on column tenant.municipality is
+  'PT município, as a date-holidays subdivision code (e.g. "PT-11" for '
+  'Lisboa) — feeds the working-day holiday calendar F17 statutory deadlines '
+  '(compliance_deadline.due_on, §10) are computed against. Nullable, no '
+  'default subdivision assumed; unset means national-holidays-only.';
+
+-- ============================================================================
 -- 3. Auth
 --
 -- Two distinct flows, per architecture §2: office users (email/password or
@@ -485,6 +506,23 @@ create table termo_responsabilidade (
   created_at          timestamptz not null default now()
 );
 
+-- ============================================================================
+-- 10a. ref_document — Phase 3 addition (06-phase3-compliance.md §7)
+--
+-- F18 (rótulo): whether the rótulo identifying the installation was
+-- affixed, per forms-and-procedures-spec.md F18. Nullable boolean, not a
+-- new template kind or endpoint of its own -- a checkbox on the existing
+-- REF flow (PATCH /jobs/:id/ref) is sufficient per spec. Null means "not
+-- yet recorded", distinct from false ("recorded as not affixed").
+-- ============================================================================
+
+alter table ref_document add column rotulo_affixed boolean;
+
+comment on column ref_document.rotulo_affixed is
+  'F18 — whether the rótulo was affixed at the installation '
+  '(forms-and-procedures-spec.md F18). Settable via PATCH /jobs/:id/ref. '
+  'Null = not yet recorded, not "no".';
+
 alter table ref_document
   add constraint fk_ref_matches_termo
   check (true);  -- see trigger below; a CHECK can't reference another table directly
@@ -508,6 +546,34 @@ $$ language plpgsql;
 create trigger trg_ref_termo_reconciliation
   before insert or update on ref_document
   for each row execute function fn_ref_termo_reconciliation();
+
+-- Symmetric direction (06-phase3-compliance.md §5): the trigger above only
+-- fires when ref_document changes, so it does nothing the moment a job's
+-- termo_responsabilidade is inserted/updated after a ref_document already
+-- exists (or is later re-issued) for that job. Same rule, same message
+-- shape (both sides mention "ref_document.ref_id (%) does not match
+-- termo_responsabilidade.ref_id_field (%)" so routes/termo.ts's
+-- catch-and-translate can reuse the same regex routes/ref.ts already
+-- uses), just checked from the other table.
+create or replace function fn_termo_ref_reconciliation()
+returns trigger as $$
+declare
+  existing_ref_id text;
+begin
+  select ref_id into existing_ref_id from ref_document where job_id = new.job_id;
+  if existing_ref_id is not null and existing_ref_id <> new.ref_id_field then
+    raise exception
+      'ref_document.ref_id (%) does not match termo_responsabilidade.ref_id_field (%) for job %. '
+      'These must be identical per the Procedimento Edição 2024 note 1 (forms-and-procedures-spec.md F15).',
+      existing_ref_id, new.ref_id_field, new.job_id;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+create trigger trg_termo_ref_reconciliation
+  before insert or update on termo_responsabilidade
+  for each row execute function fn_termo_ref_reconciliation();
 
 create table compliance_deadline (
   id            uuid primary key default gen_random_uuid(),

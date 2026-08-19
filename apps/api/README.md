@@ -19,6 +19,7 @@ Phase 2+.
 
 ```bash
 npm install                 # from the repo root — installs and links both workspaces
+npx playwright install chromium  # once, for REF PDF generation (Phase 3)
 npm run dev:api              # starts the API on http://127.0.0.1:3001
 ```
 
@@ -190,3 +191,151 @@ beyond the one mutation type Phase 1 exercised it against.
 37 checks, all passing as of this writing. Re-run after touching
 `domain/job-creation.ts`, `domain/dispatch-gate.ts`, any Phase 2 route, or
 the sync mutation handlers.
+
+## Phase 3 — compliance (F11/F12, F15–F18)
+
+Per `06-phase3-compliance.md` §4 / `04-API-SPEC.md` §7: `POST /jobs/:id/ref`,
+`PATCH /jobs/:id/ref`, `POST /jobs/:id/ref/generate-pdf`
+(`routes/ref.ts`, `domain/ref.ts`). All three 403 for
+`tenant.compliance_profile = 'basic'`, checked first inside the same
+`withTenant` transaction the rest of the route runs in, same pattern
+`domain/dispatch-gate.ts`/`domain/job-creation.ts` already use for reading
+`tenant.compliance_profile`.
+
+- **`domain/ref.ts`'s `populateFichaFields`** builds `ref_document.ficha_fields`
+  from what the job already knows: installer from
+  `app_user.professional_registration_number` via `job.assigned_to`,
+  building address from `job.address` (falling back to `client.address`)
+  plus `job.manual_edition` for "MANUAL ITED APLICÁVEL", and
+  `cabos_instalados`/`outros_materiais` from a best-effort keyword match
+  over `job_checklist_item` (`cat = 'material'`) labels and, when the job
+  has a quote, `quote_line` descriptions — neither table carries a
+  structured REF category (`catalog_item` has no category column at all),
+  so this is genuinely best-effort: text that doesn't match a known keyword
+  is left out rather than dumped into a catch-all bucket.
+  `documentacao_facultativa`/`outras_identificacoes_relevantes` are always
+  `""`, left for office editing via `PATCH /jobs/:id/ref`, which merges at
+  the top level (any key present in the request replaces that key's whole
+  value; keys omitted are untouched) rather than replacing the whole jsonb
+  document.
+- **The `fn_ref_termo_reconciliation` trigger** (`03-schema.sql` §10) is the
+  only enforcement of the REF/termo `ref_id` match — `routes/ref.ts` does
+  not duplicate that check; it catches the trigger's exception and
+  translates it to a structured `422`, the exact pattern
+  `routes/templates.ts`'s activation route already uses for
+  `fn_activate_template_version_guard`.
+- **PDF generation** (`domain/ref.ts`'s `renderRefHtml`/`renderPdfFromHtml`/
+  `generateRefPdf`) renders `src/templates/ref.html` (real HTML/CSS, the
+  real `ficha_fields` data interpolated and HTML-escaped, not a mock) via
+  Playwright's `page.pdf()` against headless Chromium, and writes the bytes
+  through the existing `ObjectStore` (`object-store.ts`, unchanged, reused
+  exactly as Phase 2 built it for photos) — the key is saved to
+  `ref_document.generated_pdf`. **No stack substitution needed here**:
+  unlike PGlite standing in for a real Postgres server, headless Chromium
+  was tried first and does launch cleanly in this sandbox (`npx playwright
+  install chromium`, then a real `page.pdf()` call, both verified directly
+  before writing `routes/ref.ts`) — `playwright` (`^1.62.1`) is a normal
+  new `apps/api` dependency, not a workaround.
+
+### F11/F12 — the two test protocols left over from Phase 2's F13/F14 scoping
+
+`seed.sql` now seeds both, alongside F13/F14, as verified/activated
+`test_protocol` template versions — the same activation gate
+(`fn_activate_template_version_guard`), no bypass:
+
+- **F12** (`coax_cc_tabela_6_7_6_9`) — real Tabela 6.7/6.9 numbers from
+  `forms-and-procedures-spec.md` §3.4 / `ited-ref-mapping.md` §7A.3: 13.8/10.8 dB
+  (coletiva/individual, 47–862 MHz) and 23.4/8.4 dB (individual only,
+  950–2150 MHz). A normal `range`-type protocol, same shape as F13/F14.
+- **F11** (`pares_cobre_tabela_6_1`) — the addendum research finding from
+  `ited-ref-mapping.md` §7A.3 and `06-phase3-compliance.md` §2: Tabela 6.1
+  isn't a numeric-limits table at all. It defers to the external EN 50173
+  Classe E standard, evaluated by the cable certifying instrument's own
+  pass/fail. Seeding a fake numeric threshold to fit the existing
+  `min`/`max` shape would have been fabrication, so the schema grew a new
+  `TestProtocolTest.dir` value instead — **`external_pass_fail`**
+  (`packages/core/src/template.ts`) — carrying no `min`/`max`, just a
+  `verified_source` citation that says outright no ITED-specific number
+  exists for this network type. `packages/core/src/test-protocol-eval.ts`'s
+  `evalTest` grew the matching branch: normalizes an externally-supplied
+  `"pass"`/`"fail"` result straight through, no computation.
+- `verify-seed.mjs` was generalized (06-phase3-compliance.md §2's explicit
+  ask) from two hardcoded F13/F14 blocks into one loop over every active
+  `test_protocol` version, so F11/F12 are checked by the same gate logic
+  rather than a third and fourth copy-pasted block.
+- `job-creation.ts`'s `inferNetworkTypeFromJobType` /
+  `resolveActiveTestProtocolByNetworkType` now cover all four network
+  types with no protocol-specific branching — the same resolution path
+  F13/F14 already used in Phase 2.
+
+### F16 — termo de responsabilidade tracking
+
+`routes/termo.ts` / `04-API-SPEC.md` §7, same route-file-plus-domain-function
+shape as `ref.ts`: `POST /jobs/:id/termo` (one per job — `job_id` is
+unique on `termo_responsabilidade`), `PATCH
+/jobs/:id/termo/recipients/:role` (read-modify-write over the `recipients`
+jsonb array), and `POST /jobs/:id/termo/paper-copy-photo` (multipart,
+through the same `ObjectStore` as job photos and REF PDFs). All three 403
+for `compliance_profile = 'basic'`. A new, symmetric DB trigger,
+`fn_termo_ref_reconciliation` (`03-schema.sql` §10), enforces the
+`ref_id_field`/REF match from the termo-insert direction — the original
+`fn_ref_termo_reconciliation` (Phase 3 F15) is untouched and still covers
+the REF-insert direction. Both routes translate the same
+`REF_TERMO_MISMATCH_REGEX` match into a `422`, never re-implementing the
+check in application code. `verify-schema.mjs` §5b exercises the reverse
+(termo-first) direction directly.
+
+### F17 — statutory deadlines, real PT working-day calendar
+
+`packages/core/src/deadlines.ts`'s `addWorkingDays` does real UTC-midnight
+calendar stepping via `date-holidays` (the library `06-phase3-compliance.md`
+recommends): skips weekends and only holiday entries with `type ===
+"public"` — an `observance` like Carnaval is correctly *not* skipped, a
+`public` holiday like Sexta-Feira Santa is. `domain/deadlines.ts` has two
+insert paths, each firing exactly once per job:
+
+- `insertTermoDeadline`, called from `domain/closeout.ts`'s
+  `submitCloseout` and `routes/jobs.ts`'s `/jobs/:id/complete`, both guarded
+  so it only fires the moment `completed_at` transitions from `null` (the
+  office `/complete` route 409s on a second call rather than double-firing).
+- `insertRefDeadline`, called from `routes/termo.ts` right after the termo
+  insert succeeds — capped at one per job by `termo_responsabilidade.job_id`'s
+  uniqueness.
+
+`GET /compliance/deadlines?status=&due_before=` (`routes/compliance.ts`) is
+the polling read a scheduled escalation worker would use to walk
+`open → reminder_sent → warning_sent → overdue`; also 403s for
+`compliance_profile = 'basic'`.
+
+### F18 — rótulo
+
+A plain `ref_document.rotulo_affixed` boolean, settable via the same
+`PATCH /jobs/:id/ref` route F15 already built (`packages/core/src/ref.ts`'s
+request schema now accepts `rotulo_affixed` alongside `ficha_fields` /
+`attachments`, still requiring at least one field present).
+
+## Proving the Phase 3 exit criterion
+
+```bash
+npm run proof:phase3        # from the repo root
+```
+
+`test/phase3-proof.mjs` follows the same real-child-process, real-HTTP
+shape as `test/phase1-proof.mjs` / `test/phase2-proof.mjs`. It confirms
+every F15–F18 route 403s outright for a `basic`-profile tenant (all seven
+REF/termo/deadline routes, one proof step); walks REF creation, `PATCH`
+(including `rotulo_affixed`), and real PDF generation through Playwright;
+creates a termo, confirms the reconciliation trigger blocks a mismatched
+`ref_id_field` and accepts a matching one from the termo-insert direction
+(the new, symmetric half of the check F15 already proved from the
+REF-insert direction); records termo recipients and a paper-copy photo
+upload; and engineers a real disagreement between naive and holiday-aware
+deadline math (naive 2026-04-15 vs. holiday-aware 2026-04-16, skipping
+Sexta-Feira Santa) to assert both the termo and REF deadlines land on the
+correct, holiday-adjusted date via `GET /compliance/deadlines` —
+independently computed, not the same code path being tested twice.
+
+37 checks, all passing as of this writing. Re-run after touching
+`domain/ref.ts`, `domain/deadlines.ts`, `domain/closeout.ts`,
+`routes/ref.ts`, `routes/termo.ts`, `routes/compliance.ts`, or
+`packages/core/src/deadlines.ts`.

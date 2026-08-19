@@ -23,12 +23,15 @@ export const CreateTemplateRequest = z.object({
 });
 export type CreateTemplateRequest = z.infer<typeof CreateTemplateRequest>;
 
-// Tabela 6.12 / 6.17-shaped test, per seed.sql's worked example.
+// Tabela 6.12 / 6.17-shaped test, per seed.sql's worked example. "external_pass_fail"
+// (06-phase3-compliance.md §2) is Tabela 6.1's shape (F11/PC): no ITED-specific numeric
+// limit exists — the parameter is tested against EN 50173 Classe E by the certifying
+// instrument's own pass/fail verdict, so no min/max is stored for it.
 export const TestProtocolTest = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   unit: z.string(),
-  dir: z.enum(["range", "min", "max"]),
+  dir: z.enum(["range", "min", "max", "external_pass_fail"]),
   min: z.number().optional(),
   max: z.number().optional(),
   recommended: z.number().optional(),
@@ -36,7 +39,8 @@ export const TestProtocolTest = z.object({
 }).refine(
   (t) => (t.dir === "range" ? t.min !== undefined && t.max !== undefined
     : t.dir === "min" ? t.min !== undefined
-      : t.max !== undefined),
+      : t.dir === "max" ? t.max !== undefined
+        : true), // external_pass_fail: neither min nor max required
   { message: "min/max required for the given dir" }
 );
 export type TestProtocolTest = z.infer<typeof TestProtocolTest>;

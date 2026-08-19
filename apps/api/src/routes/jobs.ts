@@ -25,6 +25,7 @@ import { objectStore } from "../object-store.js";
 import { completeExecutionStep } from "../domain/execution-steps.js";
 import { recordTestResult } from "../domain/test-results.js";
 import { submitCloseout } from "../domain/closeout.js";
+import { insertTermoDeadline } from "../domain/deadlines.js";
 
 export async function jobRoutes(app: FastifyInstance): Promise<void> {
   app.addHook("preHandler", requireAuth);
@@ -329,13 +330,17 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // 05-phase2-job-loop.md §8: this is also the moment compliance_deadline
-  // rows would be created for ited_ready/ited_full tenants
-  // (06-phase3-compliance.md owns that logic -- not built yet, deliberately,
-  // per that document's own scoping). Status lands on 'testing', not
-  // 'closed': 03-schema.sql §7's job.status enum treats close-out
-  // (POST /jobs/:id/closeout) as the actual terminal transition, so this
-  // route only marks "execution work is done, AAR/test capture is what's
-  // left" -- an intermediate state, not the end of the loop.
+  // rows are created for ited_ready/ited_full tenants
+  // (06-phase3-compliance.md §6) -- the termo 10-working-day clock starts
+  // the moment completed_at is first set, and for the office two-step flow
+  // (complete, then closeout) this route is that moment, not
+  // domain/closeout.ts's submitCloseout (which only inserts the deadline
+  // itself when *it* is the call that first sets completed_at -- the phone
+  // flow's case, where there is no separate /complete tap). Status lands on
+  // 'testing', not 'closed': 03-schema.sql §7's job.status enum treats
+  // close-out (POST /jobs/:id/closeout) as the actual terminal transition,
+  // so this route only marks "execution work is done, AAR/test capture is
+  // what's left" -- an intermediate state, not the end of the loop.
   app.post<{ Params: { id: string } }>("/jobs/:id/complete", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
     const jobId = req.params.id;
@@ -359,6 +364,16 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
          returning id, status, completed_at;`,
         [jobId, tenantId]
       );
+
+      const tenantRows = await tx.query<{ compliance_profile: string }>(
+        `select compliance_profile from tenant where id = $1;`,
+        [tenantId]
+      );
+      const complianceProfile = tenantRows.rows[0]?.compliance_profile ?? "basic";
+      if (complianceProfile !== "basic") {
+        await insertTermoDeadline(tx, tenantId, jobId, new Date(updated.rows[0].completed_at));
+      }
+
       return { kind: "ok" as const, row: updated.rows[0] };
     });
 

@@ -125,6 +125,55 @@ try {
   fail('RLS visibility of seeded templates', err);
 }
 
+// ---- generic pass: EVERY active test_protocol template_version, whatever --
+// its code is (06-phase3-compliance.md §2 asked for this to stop being a
+// hardcoded two-name list once F11/F12 joined F13/F14 — this loop covers
+// however many are seeded, present and future, without a third/fourth
+// hardcoded block per template). Same three properties the block above
+// already checks for F13/F14 specifically: genuinely verified (not a
+// bypass), a real non-empty citation, and visible cross-tenant like any
+// other system template.
+
+try {
+  const r = await db.query(`
+    select t.id, t.code, tv.status, tv.verified_by is not null as has_verifier,
+           tv.verified_source
+    from template t
+    join template_version tv on tv.template_id = t.id
+    where t.kind = 'test_protocol' and tv.status = 'active'
+    order by t.code;
+  `);
+
+  if (r.rows.length >= 2) ok(`generic pass: ${r.rows.length} active test_protocol template_version(s) found`);
+  else fail('generic pass: active test_protocol count', new Error(`expected at least 2, got ${r.rows.length}`));
+
+  const otherTenant2 = crypto.randomUUID();
+  await db.exec(`insert into tenant (id, name, slug) values ('${otherTenant2}', 'Unrelated Tenant 2', 'unrelated-tenant-2');`);
+
+  for (const row of r.rows) {
+    const label = row.code;
+
+    if (row.has_verifier) ok(`${label}: generic pass — verified_by is set`);
+    else fail(`${label}: generic pass — verified_by`, new Error('verified_by is null — gate was bypassed'));
+
+    if (row.verified_source && row.verified_source.trim().length > 0) {
+      ok(`${label}: generic pass — verified_source is non-empty`);
+    } else {
+      fail(`${label}: generic pass — verified_source`, new Error(`unexpected value: ${JSON.stringify(row.verified_source)}`));
+    }
+
+    const vis = await db.transaction(async (tx) => {
+      await tx.exec(`set local role fieldready_app;`);
+      await tx.exec(`set local app.current_tenant_id = '${otherTenant2}';`);
+      return tx.query(`select count(*)::int as n from template where id = '${row.id}' and layer = 'system';`);
+    });
+    if (vis.rows[0].n === 1) ok(`${label}: generic pass — visible cross-tenant`);
+    else fail(`${label}: generic pass — cross-tenant visibility`, new Error(`expected 1, got ${vis.rows[0].n}`));
+  }
+} catch (err) {
+  fail('generic pass over all active test_protocol templates', err);
+}
+
 // ---- summary ----------------------------------------------------------
 
 console.log('\n' + (failures === 0

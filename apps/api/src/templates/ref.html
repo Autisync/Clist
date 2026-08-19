@@ -1,0 +1,102 @@
+<!--
+  F15 — Ficha de identificações (REF), rendered to PDF via Playwright's
+  page.pdf() (06-phase3-compliance.md §4, architecture §2). Deliberately
+  plain HTML/CSS — this needs to contain the real ficha_fields data, not be
+  beautiful. Field layout follows the real ANEXO page 1/page 2 split
+  (ited-ref-mapping.md §7A.2). Placeholders are {{UPPER_SNAKE}} tokens,
+  substituted by apps/api/src/domain/ref.ts's renderRefHtml — every
+  value is HTML-escaped there before interpolation.
+-->
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 11pt; color: #111; margin: 24px; }
+  h1 { font-size: 15pt; margin: 0 0 4px; }
+  h2 { font-size: 12pt; margin: 18px 0 6px; border-bottom: 1px solid #999; padding-bottom: 2px; }
+  .header { display: flex; justify-content: space-between; margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+  th, td { border: 1px solid #999; padding: 4px 6px; text-align: left; font-size: 10pt; }
+  th { background: #eee; }
+  .field-row { display: flex; gap: 24px; margin-bottom: 4px; }
+  .field { margin-bottom: 4px; }
+  .field .label { font-size: 8.5pt; text-transform: uppercase; color: #555; }
+  .field .value { font-size: 11pt; }
+  .empty { color: #999; font-style: italic; }
+  .page-break { page-break-before: always; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>Ficha de identificações — REF</h1>
+    <div class="field">
+      <div class="label">ID do REF</div>
+      <div class="value">{{ID_DO_REF}}</div>
+    </div>
+    <div class="field">
+      <div class="label">Data</div>
+      <div class="value">{{DATA}}</div>
+    </div>
+  </div>
+
+  <h2>Instalador</h2>
+  <div class="field-row">
+    <div class="field">
+      <div class="label">Nome</div>
+      <div class="value">{{INSTALLER_NAME}}</div>
+    </div>
+    <div class="field">
+      <div class="label">N.º (ANACOM, OE, OET)</div>
+      <div class="value">{{INSTALLER_REG}}</div>
+    </div>
+  </div>
+
+  <h2>Edifício</h2>
+  <div class="field-row">
+    <div class="field">
+      <div class="label">Morada</div>
+      <div class="value">{{BUILDING_ADDRESS}}</div>
+    </div>
+    <div class="field">
+      <div class="label">Código postal</div>
+      <div class="value">{{BUILDING_POSTAL_CODE}}</div>
+    </div>
+    <div class="field">
+      <div class="label">Localidade postal</div>
+      <div class="value">{{BUILDING_LOCALITY}}</div>
+    </div>
+    <div class="field">
+      <div class="label">Manual ITED aplicável</div>
+      <div class="value">{{MANUAL_ITED_APPLICABLE}}</div>
+    </div>
+  </div>
+
+  <h2>Cabos instalados</h2>
+  <table>
+    <thead>
+      <tr><th>Tecnologia</th><th>Marca e modelo/referência</th><th>Classe RPC</th></tr>
+    </thead>
+    <tbody>
+      {{CABOS_ROWS}}
+    </tbody>
+  </table>
+
+  <h2>Outros materiais e dispositivos instalados</h2>
+  <table>
+    <thead>
+      <tr><th>Designação</th><th>Marca e modelo/referência</th></tr>
+    </thead>
+    <tbody>
+      {{MATERIAIS_ROWS}}
+    </tbody>
+  </table>
+
+  <h2>Documentação facultativa</h2>
+  <p>{{DOCUMENTACAO_FACULTATIVA}}</p>
+
+  <div class="page-break"></div>
+  <h2>Outras identificações relevantes</h2>
+  <p>{{OUTRAS_IDENTIFICACOES_RELEVANTES}}</p>
+</body>
+</html>

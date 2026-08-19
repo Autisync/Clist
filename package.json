@@ -13,6 +13,7 @@
     "build": "npm run build --workspace=packages/core --workspace=apps/api --workspace=apps/web",
     "proof:phase1": "npm run proof --workspace=apps/api",
     "proof:phase2": "npm run proof:phase2 --workspace=apps/api",
+    "proof:phase3": "npm run proof:phase3 --workspace=apps/api",
     "smoke:web": "node apps/web/test/smoke.mjs",
     "verify:schema": "node verify-schema.mjs 03-schema.sql",
     "verify:seed": "node verify-seed.mjs 03-schema.sql seed.sql"
@@ -23,6 +24,7 @@
   "allowScripts": {
     "esbuild@0.28.2": true,
     "fsevents@2.3.3": true,
-    "sharp@0.34.5": true
+    "sharp@0.34.5": true,
+    "fsevents@2.3.2": true
   }
 }

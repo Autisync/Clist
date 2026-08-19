@@ -19,6 +19,13 @@
 // .refine already guarantees min/max are present for the given `dir`, so
 // the non-null assertions below hold at runtime for any value that passed
 // that schema.
+//
+// dir === "external_pass_fail" (06-phase3-compliance.md §2, F11/Tabela 6.1):
+// there's no ITED-specific numeric limit to compute against — the "value"
+// passed in for this kind of test IS the verdict itself, as displayed by the
+// certifying instrument against EN 50173 Classe E. No min/max exists on the
+// test to compute against, so this branch just normalizes and returns that
+// verdict rather than computing anything numeric.
 
 import type { TestProtocolTest } from "./template.js";
 
@@ -28,7 +35,16 @@ export function evalTest(
   test: TestProtocolTest,
   value: string | number | null | undefined
 ): TestOutcome {
-  if (value === "" || value === null || value === undefined || Number.isNaN(Number(value))) {
+  if (value === "" || value === null || value === undefined) {
+    return "pending";
+  }
+  if (test.dir === "external_pass_fail") {
+    const normalized = String(value).trim().toLowerCase();
+    if (normalized === "pass") return "pass";
+    if (normalized === "fail") return "fail";
+    return "pending";
+  }
+  if (Number.isNaN(Number(value))) {
     return "pending";
   }
   const n = Number(value);

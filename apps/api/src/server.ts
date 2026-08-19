@@ -13,6 +13,9 @@ import { jobRoutes } from "./routes/jobs.js";
 import { vanAuditRoutes } from "./routes/van-audits.js";
 import { equipmentRoutes } from "./routes/equipment.js";
 import { followUpActionRoutes } from "./routes/follow-up-actions.js";
+import { refRoutes } from "./routes/ref.js";
+import { termoRoutes } from "./routes/termo.js";
+import { complianceRoutes } from "./routes/compliance.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   await getDb(); // boot/migrate before accepting requests
@@ -43,6 +46,9 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(vanAuditRoutes);
   await app.register(equipmentRoutes);
   await app.register(followUpActionRoutes);
+  await app.register(refRoutes);
+  await app.register(termoRoutes);
+  await app.register(complianceRoutes);
 
   return app;
 }

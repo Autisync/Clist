@@ -12,6 +12,7 @@
 
 import type { JobCloseoutTechnicianRequest } from "@fieldready/core";
 import type { PGliteTx } from "../db.js";
+import { insertTermoDeadline } from "./deadlines.js";
 
 export type SubmitCloseoutResult =
   | { kind: "ok"; row: Record<string, unknown> }
@@ -24,8 +25,16 @@ export async function submitCloseout(
   userId: string,
   body: JobCloseoutTechnicianRequest
 ): Promise<SubmitCloseoutResult> {
-  const jobRows = await tx.query(`select id from job where id = $1;`, [jobId]);
+  const jobRows = await tx.query<{ id: string; completed_at: string | null }>(
+    `select id, completed_at from job where id = $1;`,
+    [jobId]
+  );
   if (jobRows.rows.length === 0) return { kind: "not_found" };
+  // Captured before the update below so we can tell a genuinely first-time
+  // completion (completed_at was null) apart from a retried/idempotent
+  // closeout submission on an already-completed job (06-phase3-compliance.md
+  // §6) -- the termo deadline clock must start exactly once per job.
+  const completedAtBefore = jobRows.rows[0].completed_at;
 
   // job_closeout.job_id is unique (03-schema.sql §11) -- upsert so a retried
   // submission (or a resubmission before dispatch of a corrected voice note)
@@ -67,11 +76,29 @@ export async function submitCloseout(
   // office flow's earlier, more precise timestamp when it exists, and fills
   // the gap for the phone flow when it doesn't -- found live-testing this
   // exact path, not a hypothetical.
-  await tx.query(
+  const updated = await tx.query<{ completed_at: string }>(
     `update job set status = 'closed', completed_at = coalesce(completed_at, now())
-     where id = $1 and tenant_id = $2;`,
+     where id = $1 and tenant_id = $2
+     returning completed_at;`,
     [jobId, tenantId]
   );
+
+  // F17 (06-phase3-compliance.md §6): the termo 10-working-day clock starts
+  // the moment completed_at is first set -- only when this update is the
+  // one that actually set it (completedAtBefore was null), and only for
+  // ited_ready/ited_full tenants (basic tenants never see compliance
+  // deadlines, same gate every /compliance and /jobs/:id/ref|termo route
+  // enforces).
+  if (completedAtBefore === null) {
+    const tenantRows = await tx.query<{ compliance_profile: string }>(
+      `select compliance_profile from tenant where id = $1;`,
+      [tenantId]
+    );
+    const complianceProfile = tenantRows.rows[0]?.compliance_profile ?? "basic";
+    if (complianceProfile !== "basic") {
+      await insertTermoDeadline(tx, tenantId, jobId, new Date(updated.rows[0].completed_at));
+    }
+  }
 
   return { kind: "ok", row: inserted.rows[0] };
 }

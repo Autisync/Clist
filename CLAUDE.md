@@ -187,20 +187,45 @@ set `completed_at` when closed via the phone flow, which has no separate
 Phase 3 was even built). Dashboard analytics and Suppliers are honest
 placeholders in this client, not faked — both need Phase 4.
 
-### Phase 3 — compliance — designed, not yet built
-Test protocols (F11/F12, the remainder beyond F13/F14), REF assembly, termo tracking,
-statutory deadlines with a real Portuguese working-day holiday calendar (not a
-hand-rolled one — use a maintained library/API and confirm which regional holidays
-apply, since some are municipal). Full build plan: `06-phase3-compliance.md`.
+### Phase 3 — compliance — exit criterion met, 19 August
 
-F11/F12 are both sourced now (18 August) — see `ited-ref-mapping.md` §7A.3's addendum.
-F12's real numbers were already in `forms-and-procedures-spec.md` §3.4. F11 turned out
-not to be a numeric-limits table at all: Tabela 6.1 (pares de cobre) defers entirely to
-the external EN 50173 standard's Class E parameters, evaluated by the cable certifier's
-own pass/fail — not an ITED-authored number. Seeding it honestly needs a schema addition
-(`TestProtocolTest.dir: "external_pass_fail"`, no `min`/`max`), not a fabricated
-threshold forced into the existing shape; see `06-phase3-compliance.md` §2 for the exact
-change. Concrete library recommendation for the holiday calendar: `date-holidays`, npm.
+Test protocols (F11/F12, the remainder beyond F13/F14), REF assembly (F15), termo
+tracking (F16), statutory deadlines with a real Portuguese working-day holiday calendar
+(F17), rótulo (F18). Full build plan: `06-phase3-compliance.md`.
+
+Built: F12 seeded with the real Tabela 6.7/6.9 numbers already in
+`forms-and-procedures-spec.md` §3.4; F11 seeded honestly per the addendum finding in
+`ited-ref-mapping.md` §7A.3 — Tabela 6.1 (pares de cobre) isn't a numeric-limits table at
+all, it defers to the external EN 50173 Classe E standard evaluated by the cable
+certifier's own pass/fail, so the schema grew a real `TestProtocolTest.dir:
+"external_pass_fail"` value (no `min`/`max`, a `verified_source` that says so outright)
+rather than a fabricated threshold forced into the existing shape (`06-phase3-compliance.md`
+§2); REF assembly with real PDF generation (`apps/api/src/routes/ref.ts`,
+`domain/ref.ts`, Playwright against headless Chromium); termo de responsabilidade
+tracking including a new, symmetric reconciliation trigger
+(`fn_termo_ref_reconciliation`) that enforces the REF/termo match from the termo-insert
+direction the way the original trigger already did from the REF-insert direction
+(`apps/api/src/routes/termo.ts`); statutory deadlines on real UTC working-day math via
+`date-holidays`, correctly distinguishing `public` holidays (skipped) from
+`observance`-type ones like Carnaval (not skipped) (`packages/core/src/deadlines.ts`,
+`apps/api/src/domain/deadlines.ts`, `apps/api/src/routes/compliance.ts`); rótulo as a
+plain `ref_document.rotulo_affixed` field on the existing REF `PATCH` route. Every
+REF/termo/deadline route 403s for `tenant.compliance_profile = 'basic'`, checked first
+inside the same `withTenant` transaction the rest of the route runs in, same pattern
+Phase 2's dispatch gate already used for reading `tenant.compliance_profile`. See
+`apps/api/README.md`'s Phase 3 section for the full rundown.
+
+**Exit criterion proven, not assumed:** `npm run proof:phase3` (root) spins up the real
+API as a child process and, over HTTP only: confirms all seven REF/termo/deadline
+routes reject a `basic`-profile tenant with `403`; walks REF creation, `PATCH`
+(including `rotulo_affixed`), and real PDF generation; creates a termo, confirms the new
+symmetric reconciliation trigger blocks a mismatched `ref_id_field` and accepts a
+matching one from the termo-insert direction; records termo recipients and a
+paper-copy-photo upload; and engineers a real disagreement between naive and
+holiday-aware deadline math (naive 2026-04-15 vs. holiday-aware 2026-04-16, skipping
+Sexta-Feira Santa) to confirm both the termo and REF deadlines land on the correct,
+independently-computed date. 37/37 checks passing —
+`apps/api/test/phase3-proof.mjs`.
 
 ### Phase 4 — cost intelligence — designed, not yet built
 Site survey (F01), receipt OCR (buy a vendor, test on ~20 real receipts before

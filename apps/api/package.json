@@ -9,16 +9,19 @@
     "start": "tsx src/index.ts",
     "build": "tsc -p .",
     "proof": "node test/phase1-proof.mjs",
-    "proof:phase2": "node test/phase2-proof.mjs"
+    "proof:phase2": "node test/phase2-proof.mjs",
+    "proof:phase3": "node test/phase3-proof.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.5",
-    "@fieldready/core": "0.1.0",
-    "bcryptjs": "^3.0.3",
-    "fastify": "^5.12.0",
     "@fastify/cookie": "^11.1.2",
     "@fastify/multipart": "^9.4.0",
+    "@fieldready/core": "0.1.0",
+    "bcryptjs": "^3.0.3",
+    "date-holidays": "^3.35.0",
+    "fastify": "^5.12.0",
     "jsonwebtoken": "^9.0.3",
+    "playwright": "^1.62.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {

@@ -79,8 +79,8 @@ async function resolveActiveTemplateVersion(
 }
 
 // Review finding (medium, apps/api/src/domain/job-creation.ts:129): unlike
-// `readiness_<slug>`/`execution_<slug>`, seed.sql's two verified F13/F14
-// test_protocol templates are NOT coded by job-type slug -- they're coded
+// `readiness_<slug>`/`execution_<slug>`, seed.sql's verified test_protocol
+// templates are NOT coded by job-type slug -- they're coded e.g.
 // `coax_smatv_tt_tabela_6_12` and `fibra_optica_tabela_6_17`
 // (seed.sql:54,94), keyed by which network they test, because a single
 // test_protocol is reused across every job that touches that network
@@ -93,17 +93,23 @@ async function resolveActiveTemplateVersion(
 // `job_test_result.network_type` already does (03-schema.sql §9). job_type
 // itself has no structured network_type field yet (03-schema.sql: "free
 // text v1"), so `inferNetworkTypeFromJobType` is a documented, narrow
-// keyword heuristic over the job_type text -- it only ever infers the two
-// network types Phase 2 wires end to end (SMATV, FO); anything else (PC/CC,
-// or a job_type with no recognizable keyword) infers to null and falls
-// through to "no protocol resolved", the same behavior an unmatched code
-// produced before. Extend the keyword lists (not the query shape) when a
-// new job_type wording needs recognizing.
-function inferNetworkTypeFromJobType(jobType: string): "SMATV" | "FO" | null {
+// keyword heuristic over the job_type text.
+//
+// 06-phase3-compliance.md §2a: now that F11 (PC, Tabela 6.1) and F12 (CC,
+// Tabela 6.4/6.7/6.9) are seeded and verified alongside F13/F14, this
+// heuristic covers all four network types -- CC is checked before the
+// generic coax/SMATV branch, since "coletiva"/"colectiva" is the word that
+// distinguishes a distribution-network coax job (F12) from a per-outlet
+// coax-TT job (F13/SMATV), which both otherwise match on "coax"/"coaxial".
+// A job_type matching none of these keywords still infers to null and
+// falls through to "no protocol resolved", same as before this extension.
+function inferNetworkTypeFromJobType(jobType: string): "SMATV" | "FO" | "PC" | "CC" | null {
   const tokens = slugify(jobType).split("-");
   const has = (...words: string[]) => words.some((w) => tokens.includes(w));
   if (has("fibra", "fibre", "optica", "otica", "fo")) return "FO";
+  if (has("coletiva", "colectiva")) return "CC";
   if (has("tdt", "coax", "coaxial", "smatv", "sat", "antena", "mastro")) return "SMATV";
+  if (has("estruturada", "cablagem", "utp", "ftp", "rj45", "cat6", "cat5e")) return "PC";
   return null;
 }
 
@@ -116,7 +122,7 @@ function inferNetworkTypeFromJobType(jobType: string): "SMATV" | "FO" | null {
 // layer; it does not encode any resolution meaning of its own.
 async function resolveActiveTestProtocolByNetworkType(
   tx: PGliteTx,
-  networkType: "SMATV" | "FO"
+  networkType: "SMATV" | "FO" | "PC" | "CC"
 ): Promise<ResolvedTemplateBody | null> {
   const rows = await tx.query<{ body: ResolvedTemplateBody }>(
     `select tv.body
@@ -172,12 +178,12 @@ export async function createJobFromQuote(
     `execution_${slug}`
   );
 
-  // 4. Test protocol — only for non-basic compliance profiles, and only for
-  // the two network types Phase 2 explicitly wires (§7 scoping decision):
-  // F13 (SMATV) and F14 (FO). PC/CC numeric limits aren't sourced yet
-  // (06-phase3-compliance.md §2) — a resolved protocol for either of those
-  // is treated the same as "no matching protocol" this phase: left null,
-  // not half-wired.
+  // 4. Test protocol — only for non-basic compliance profiles. Phase 2
+  // wired F13 (SMATV) and F14 (FO); 06-phase3-compliance.md §2/§2a extends
+  // the same resolution to F11 (PC) and F12 (CC) now that both are sourced,
+  // seeded, and verified (seed.sql, verify-seed.mjs) — no protocol-specific
+  // branching needed here, `inferNetworkTypeFromJobType` and
+  // `resolveActiveTestProtocolByNetworkType` already generalize to all four.
   let testProtocolBody: ResolvedTemplateBody | null = null;
   if (complianceProfile !== "basic") {
     const networkType = inferNetworkTypeFromJobType(jobType);

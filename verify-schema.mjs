@@ -188,6 +188,47 @@ try {
   fail('REF/termo reconciliation', err);
 }
 
+// ---- 5b. Reverse direction: termo inserted after ref_document exists ------
+// (06-phase3-compliance.md §5 -- fn_termo_ref_reconciliation, the symmetric
+// trigger on termo_responsabilidade itself, not just on ref_document.)
+
+try {
+  const client = await db.query(`
+    insert into client (tenant_id, name) values ('${tenantA}', 'Cliente REF 2') returning id;
+  `);
+  const job = await db.query(`
+    insert into job (tenant_id, client_id, code, title, job_type, quoted_hours, quoted_materials)
+    values ('${tenantA}', '${client.rows[0].id}', 'JOB-9011', 'Teste REF 2', 'TDT novo', 3, 100)
+    returning id;
+  `);
+  const jobId = job.rows[0].id;
+
+  await db.exec(`
+    insert into ref_document (tenant_id, job_id, ref_id)
+    values ('${tenantA}', '${jobId}', 'REF-2026-0099');
+  `);
+
+  let mismatchBlocked = false;
+  try {
+    await db.exec(`
+      insert into termo_responsabilidade (tenant_id, job_id, number, ref_id_field, issued_at)
+      values ('${tenantA}', '${jobId}', 'TR-0002', 'REF-2026-DIFFERENT', now());
+    `);
+  } catch (err) {
+    mismatchBlocked = /does not match/.test(err.message);
+  }
+  if (mismatchBlocked) ok('trigger: mismatched termo/REF id is rejected (reverse direction)');
+  else fail('termo/REF reconciliation (reverse)', new Error('mismatch was not blocked'));
+
+  await db.exec(`
+    insert into termo_responsabilidade (tenant_id, job_id, number, ref_id_field, issued_at)
+    values ('${tenantA}', '${jobId}', 'TR-0002', 'REF-2026-0099', now());
+  `);
+  ok('trigger: matching termo/REF id inserts cleanly (reverse direction)');
+} catch (err) {
+  fail('termo/REF reconciliation (reverse)', err);
+}
+
 // ---- 6. Dashboard views compute -------------------------------------------
 
 try {
