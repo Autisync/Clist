@@ -9,9 +9,11 @@
   ],
   "scripts": {
     "dev:api": "npm run dev --workspace=apps/api",
-    "build": "npm run build --workspace=packages/core --workspace=apps/api",
+    "dev:web": "npm run dev --workspace=apps/web",
+    "build": "npm run build --workspace=packages/core --workspace=apps/api --workspace=apps/web",
     "proof:phase1": "npm run proof --workspace=apps/api",
     "proof:phase2": "npm run proof:phase2 --workspace=apps/api",
+    "smoke:web": "node apps/web/test/smoke.mjs",
     "verify:schema": "node verify-schema.mjs 03-schema.sql",
     "verify:seed": "node verify-seed.mjs 03-schema.sql seed.sql"
   },
