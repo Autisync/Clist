@@ -17,18 +17,24 @@
  *
  * Cycling stays client-side state (a single index over one fetched list),
  * exactly like the prototype's `screens.prep` — NOT one route per item,
- * per this stage's explicit instruction. This stage does not persist
- * answers anywhere yet (no PATCH, no /sync/mutations call — that's the
- * next stage's offline-queue wiring). To hand the "Tenho"/"Não tenho"
+ * per this stage's explicit instruction. To hand the "Tenho"/"Não tenho"
  * answers across the real route boundary to /prep-result, they're written
  * to sessionStorage keyed by job id right before navigating; prep-result
  * reads that back. This is local-only, not a durable/synced answer.
+ *
+ * Each tap ALSO enqueues a checklist_item.update mutation
+ * (src/lib/offline-queue.ts) so the answer survives offline and reaches
+ * the office via the real sync loop (components/field/OutboxSync.tsx).
+ * enqueueMutation() writes to IndexedDB and returns immediately — it is
+ * never awaited before advancing the screen, so the tap stays instant
+ * regardless of connectivity.
  */
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ChevronLeft, CheckCircle2, XCircle, Package, Wrench, FileText } from "lucide-react";
 import { apiFetch, ApiError } from "@/lib/api";
+import { enqueueMutation } from "@/lib/offline-queue";
 import { BigButton } from "@/components/field/BigButton";
 import { prepStorageKey, type Cat, type ReadinessItem, type PrepAnswerItem } from "../_lib/prep";
 
@@ -99,6 +105,15 @@ export default function PrepPage() {
   }
 
   function answer(item: ReadinessItem, value: "yes" | "no", list: ReadinessItem[]) {
+    // Fire-and-forget: enqueueMutation() is synchronous/local (IndexedDB
+    // write only, no network call), so this never blocks the tap — see
+    // file header and offline-queue.ts's own doc comment on that contract.
+    void enqueueMutation({
+      type: "checklist_item.update",
+      job_id: jobId,
+      payload: { item_id: item.id, status: value === "yes" ? "ok" : "missing" },
+    });
+
     const nextAnswers = { ...answers, [item.id]: value };
     if (idx + 1 < list.length) {
       setAnswers(nextAnswers);
