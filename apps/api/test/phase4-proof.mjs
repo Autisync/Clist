@@ -97,13 +97,27 @@ let serverProc = null;
 
 function spawnServer() {
   return new Promise((resolve, reject) => {
+    // Strip any VERYFI_* credentials from the inherited environment before
+    // spawning -- this proof must always exercise FixtureReceiptOcrProvider
+    // (receipt-ocr-provider.ts's deterministic, no-network stand-in), never
+    // the real vendor, regardless of what happens to be exported in
+    // whichever shell runs this script. Real Veryfi calls are slow,
+    // rate-limited, cost money, and non-deterministic -- none of which this
+    // proof can tolerate. This must stay true even if apps/api/.env ever
+    // gets auto-loaded by some future change to how the server boots.
+    const env = { ...process.env };
+    delete env.VERYFI_CLIENT_ID;
+    delete env.VERYFI_CLIENT_SECRET;
+    delete env.VERYFI_USERNAME;
+    delete env.VERYFI_API_KEY;
+
     const proc = spawn(
       process.execPath,
       ["--import", "tsx", "apps/api/src/index.ts"],
       {
         cwd: REPO_ROOT,
         env: {
-          ...process.env,
+          ...env,
           PORT: String(PORT),
           SESSION_JWT_SECRET: JWT_SECRET,
           FIELDREADY_RUNTIME_DIR: RUNTIME_DIR,

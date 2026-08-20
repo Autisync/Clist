@@ -363,17 +363,36 @@ below.
 - **Receipts** (`routes/receipts.ts`) — `POST /receipts` accepts a multipart
   photo, stores the bytes via the existing `ObjectStore` (unchanged, reused
   exactly as Phase 2/3 built it for job photos and REF PDFs), and runs it
-  through `receipt-ocr-provider.ts`. **`receipt-ocr-provider.ts` is a
-  fixture stub, deliberately not a real OCR vendor** — architecture §6 and
-  `07-phase4-cost-intelligence.md` §3 are explicit that picking a real OCR
-  vendor needs evaluation against ~20 real receipts this codebase doesn't
-  have yet; the interface (`parse(buffer): {doc_number, receipt_date,
-  lines}`) is real and swappable, the implementation behind it returns
-  deterministic canned data, no network call, no API key, nothing new in
-  `package.json`. Parsed lines are matched to `catalog_item` by
-  case-insensitive name/SKU; a line with no match gets `item_id = null`
-  ("sem correspondência") and is inserted for office review, never dropped
-  and never guessed at. **`POST /receipts` writes only `receipt` and
+  through `receipt-ocr-provider.ts`. **`receipt-ocr-provider.ts` now has a
+  real vendor behind it — Veryfi — selected once at module load if
+  `VERYFI_CLIENT_ID`/`VERYFI_CLIENT_SECRET`/`VERYFI_USERNAME`/
+  `VERYFI_API_KEY` are all set (`apps/api/.env`, gitignored;
+  `apps/api/.env.example` documents the variable names, no values), falling
+  back to the original deterministic `FixtureReceiptOcrProvider` otherwise.
+  **Choosing a vendor still does not by itself satisfy architecture §6's
+  bar** — evaluating real accuracy against ~20 real Portuguese thermal
+  receipts hasn't happened; what changed is that evaluation can now
+  actually be run against live output instead of staying blocked on
+  "nothing to test against." Verified working against the real Veryfi API
+  directly before landing (a real `201` with a full parsed response, not
+  just "the code compiles") — the HMAC-SHA256 request-signing scheme
+  (`docs.veryfi.com/api/getting-started/authentication/`) is exact, not
+  approximate. **A vendor outage/timeout degrades the receipt upload, it
+  never fails it**: OCR failure (`ReceiptOcrError`, a 20s timeout,
+  non-2xx, or malformed response) is caught in the route, the receipt is
+  still saved (the image is already durably stored by that point) with
+  `ocr_raw: {"ocr_failed": true}` and zero parsed lines, and the response
+  carries `ocr_failed: true` so `apps/web`'s receipt-review UI shows an
+  honest message instead of an unexplained empty list — uptime of receipt
+  *capture* must not depend on a third party's uptime. **Every
+  proof/smoke script that spawns this server explicitly strips the four
+  `VERYFI_*` keys from the child process's environment** regardless of
+  what the host shell has set, so automated runs are always against the
+  deterministic fixture — fast, free, and never flaky on a real vendor's
+  network. Parsed lines are matched to `catalog_item` by case-insensitive
+  name/SKU; a line with no match gets `item_id = null` ("sem
+  correspondência") and is inserted for office review, never dropped and
+  never guessed at. **`POST /receipts` writes only `receipt` and
   `receipt_line` rows — never `supplier_price`.** `POST
   /receipts/:id/confirm` is the one human-gated write: given a set of
   `line_ids`, for each confirmed line that has a matched `item_id` and a

@@ -1,9 +1,9 @@
-!.env.example
 *.local
 .claude/
 .data/
 .env
 .env.*
+!.env.example
 .next/
 dist/
 next-env.d.ts

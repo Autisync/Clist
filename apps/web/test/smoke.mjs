@@ -80,13 +80,23 @@ let webProc = null;
 
 function spawnApi() {
   return new Promise((resolve, reject) => {
+    // Same reasoning as apps/api/test/phase4-proof.mjs's spawnServer():
+    // never let a real Veryfi credential from the host shell leak into an
+    // automated test run, regardless of whether this particular script
+    // exercises receipts today.
+    const env = { ...process.env };
+    delete env.VERYFI_CLIENT_ID;
+    delete env.VERYFI_CLIENT_SECRET;
+    delete env.VERYFI_USERNAME;
+    delete env.VERYFI_API_KEY;
+
     const proc = spawn(
       process.execPath,
       ["--import", "tsx", "apps/api/src/index.ts"],
       {
         cwd: REPO_ROOT,
         env: {
-          ...process.env,
+          ...env,
           PORT: String(API_PORT),
           SESSION_JWT_SECRET: JWT_SECRET,
           FIELDREADY_RUNTIME_DIR: RUNTIME_DIR,

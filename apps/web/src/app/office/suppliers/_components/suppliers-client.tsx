@@ -102,7 +102,7 @@ export function SuppliersClient({
   const [receiptDate, setReceiptDate] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [receipt, setReceipt] = useState<{ id: string; lines: ReceiptLine[] } | null>(null);
+  const [receipt, setReceipt] = useState<{ id: string; lines: ReceiptLine[]; ocr_failed?: boolean } | null>(null);
   const [checkedLines, setCheckedLines] = useState<Set<string>>(new Set());
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -501,7 +501,15 @@ export function SuppliersClient({
             </div>
           )}
 
-          {receipt && (
+          {receipt?.ocr_failed && (
+            <div className="border border-amber-300 bg-amber-50 text-amber-800 rounded p-2.5 text-xs">
+              A leitura automática do recibo falhou (serviço indisponível ou demorou
+              demasiado). O recibo foi guardado — adicione os preços manualmente acima em
+              vez de confirmar linhas aqui.
+            </div>
+          )}
+
+          {receipt && receipt.lines.length > 0 && (
             <div className="border border-zinc-200 rounded">
               <div className="px-3 py-2 border-b border-zinc-100 text-xs text-zinc-500">
                 Confirme a correspondência antes de atualizar a tabela de preços — linhas sem

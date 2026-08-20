@@ -17,7 +17,7 @@ import { CreateReceiptRequest, ConfirmReceiptLinesRequest } from "@fieldready/co
 import { withTenant } from "../db.js";
 import { requireAuth } from "../auth/middleware.js";
 import { objectStore } from "../object-store.js";
-import { receiptOcrProvider } from "../receipt-ocr-provider.js";
+import { receiptOcrProvider, ReceiptOcrError, type ReceiptOcrResult } from "../receipt-ocr-provider.js";
 
 export async function receiptRoutes(app: FastifyInstance): Promise<void> {
   app.addHook("preHandler", requireAuth);
@@ -46,9 +46,24 @@ export async function receiptRoutes(app: FastifyInstance): Promise<void> {
     const key = crypto.randomUUID();
     await objectStore.put(key, buffer);
 
-    // Stand-in vendor call (receipt-ocr-provider.ts) -- see that file for
-    // why this is deliberately not a real OCR engine yet.
-    const ocrResult = await receiptOcrProvider.parse(buffer);
+    // Vendor OCR call (receipt-ocr-provider.ts) -- deliberately outside the
+    // withTenant transaction below (a slow/failed third-party call must
+    // never hold a DB transaction open) and explicitly guarded: the receipt
+    // image is already durably stored (objectStore.put above) by this
+    // point, so a Veryfi outage or timeout must degrade to "receipt saved,
+    // zero parsed lines, office fills in manually" -- never a 500 that
+    // loses the upload entirely. Uptime of receipt capture must not depend
+    // on a third-party vendor's uptime.
+    let ocrResult: ReceiptOcrResult;
+    let ocrFailed = false;
+    try {
+      ocrResult = await receiptOcrProvider.parse(buffer);
+    } catch (err) {
+      if (!(err instanceof ReceiptOcrError)) throw err; // a real bug, not a vendor failure -- surface it normally
+      req.log?.warn?.({ err }, "receipt OCR provider failed; saving receipt with zero parsed lines");
+      ocrFailed = true;
+      ocrResult = { lines: [] };
+    }
 
     const result = await withTenant(tenantId, async (tx) => {
       if (metadata.supplier_id) {
@@ -69,7 +84,10 @@ export async function receiptRoutes(app: FastifyInstance): Promise<void> {
           metadata.doc_number ?? ocrResult.doc_number ?? null,
           metadata.receipt_date ?? ocrResult.receipt_date ?? null,
           key,
-          JSON.stringify(ocrResult),
+          // ocr_raw is "kept for audit" (03-schema.sql §5's own comment) --
+          // a failure is exactly the kind of thing that belongs in an audit
+          // trail, so it's recorded here rather than only logged and lost.
+          JSON.stringify(ocrFailed ? { ocr_failed: true } : ocrResult),
         ]
       );
       const receiptId = receiptRows.rows[0].id;
@@ -101,7 +119,7 @@ export async function receiptRoutes(app: FastifyInstance): Promise<void> {
     });
 
     if (result.kind === "supplier_not_found") return reply.code(404).send({ error: "supplier_not_found" });
-    return reply.code(201).send({ id: result.receiptId, lines: result.lines });
+    return reply.code(201).send({ id: result.receiptId, lines: result.lines, ocr_failed: ocrFailed });
   });
 
   app.get<{ Params: { id: string } }>("/receipts/:id", async (req, reply) => {

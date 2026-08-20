@@ -130,6 +130,11 @@ export async function uploadReceipt(
     qty: string;
     unit_price: string;
   }[];
+  // true when the OCR vendor call failed (timeout/network/non-2xx) and the
+  // receipt was saved with zero parsed lines instead of the upload failing
+  // outright -- apps/api/src/routes/receipts.ts's graceful-degradation
+  // path. Always present; false in the normal case.
+  ocr_failed: boolean;
 }> {
   const formData = new FormData();
   if (metadata.supplier_id) formData.append("supplier_id", metadata.supplier_id);
