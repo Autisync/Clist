@@ -26,6 +26,7 @@ import { completeExecutionStep } from "../domain/execution-steps.js";
 import { recordTestResult } from "../domain/test-results.js";
 import { submitCloseout } from "../domain/closeout.js";
 import { insertTermoDeadline } from "../domain/deadlines.js";
+import { pickupPlan, type MissingItem } from "../domain/sourcing.js";
 
 export async function jobRoutes(app: FastifyInstance): Promise<void> {
   app.addHook("preHandler", requireAuth);
@@ -142,6 +143,52 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
 
     if (result.kind === "not_found") return reply.code(404).send({ error: "job_not_found" });
     return reply.send({ ...result.summary, items: result.items });
+  });
+
+  // 04-API-SPEC.md §5, 07-phase4-cost-intelligence.md §4: backs the phone's
+  // "faltam N" screen (prep-result). For the job's missing mandatory
+  // scope=job checklist items that carry a catalog item_id, groups
+  // sourcing options by supplier and ranks by (items covered desc,
+  // currently-open desc, total price asc) -- domain/sourcing.ts's
+  // pickupPlan, the prototype's pickupPlan (~line 718) ported exactly, not
+  // approximated.
+  app.get<{ Params: { id: string } }>("/jobs/:id/pickup-plan", async (req, reply) => {
+    const tenantId = req.auth!.tenant_id;
+
+    const result = await withTenant(tenantId, async (tx) => {
+      const jobRows = await tx.query(`select id from job where id = $1 and tenant_id = $2;`, [
+        req.params.id,
+        tenantId,
+      ]);
+      if (jobRows.rows.length === 0) return { kind: "not_found" as const };
+
+      const missingRows = await tx.query<{
+        id: string;
+        label: string;
+        item_id: string;
+        qty: string;
+      }>(
+        `select id, label, item_id, qty
+         from job_checklist_item
+         where job_id = $1 and scope = 'job' and mandatory = true and status = 'missing'
+               and item_id is not null
+         order by label;`,
+        [req.params.id]
+      );
+
+      const missingItems: MissingItem[] = missingRows.rows.map((row) => ({
+        checklist_item_id: row.id,
+        label: row.label,
+        item_id: row.item_id,
+        qty: Number(row.qty),
+      }));
+
+      const plan = await pickupPlan(tx, tenantId, missingItems);
+      return { kind: "ok" as const, plan };
+    });
+
+    if (result.kind === "not_found") return reply.code(404).send({ error: "job_not_found" });
+    return reply.send({ plan: result.plan });
   });
 
   // Office-side direct write, NOT for phone use (§5) -- the phone submits

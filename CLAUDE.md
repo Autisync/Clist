@@ -180,12 +180,13 @@ what actually proves PRD §8's exit criterion ("a technician completes the full
 loop on the phone UI") rather than just the API supporting it. Includes a real
 offline sync queue (IndexedDB outbox, architecture §4 Option B) using the
 exact idempotent mutation contract above. See `apps/web/README.md` for the
-full rundown, its own proof (`npm run smoke:web`, 22/22 checks), and a real
+full rundown, its own proof (`npm run smoke:web`, 23/23 checks), and a real
 bug it found and fixed in the API along the way (`domain/closeout.ts` never
 set `completed_at` when closed via the phone flow, which has no separate
 "mark complete" step — silently breaking Phase 3's deadline clock before
-Phase 3 was even built). Dashboard analytics and Suppliers are honest
-placeholders in this client, not faked — both need Phase 4.
+Phase 3 was even built). Dashboard analytics and Suppliers were honest
+placeholders in this client through Phase 3 — both are wired to real data
+as of Phase 4, below.
 
 ### Phase 3 — compliance — exit criterion met, 19 August
 
@@ -227,14 +228,63 @@ Sexta-Feira Santa) to confirm both the termo and REF deadlines land on the corre
 independently-computed date. 37/37 checks passing —
 `apps/api/test/phase3-proof.mjs`.
 
-### Phase 4 — cost intelligence — designed, not yet built
-Site survey (F01), receipt OCR (buy a vendor, test on ~20 real receipts before
-committing — architecture §6), supplier price comparison, the dashboard. Deliberately
-last: needs 30+ real closed jobs before any of its numbers mean anything — that gate is
-on trusting the dashboard's conclusions, not on the code existing; see
-`07-phase4-cost-intelligence.md` for why most of this phase's endpoints are thin reads
-over views the schema already ships, and for what's deliberately left as an interface
-rather than a vendor choice (receipt OCR, Google Places) pending real-world evaluation.
+### Phase 4 — cost intelligence — exit criterion met, 20 August
+
+Site survey (F01, unchanged — already the existing checklist-template mechanism, no new
+code needed per `07-phase4-cost-intelligence.md` §6), suppliers/prices, receipt capture
+and human-confirmed pricing, supplier sourcing and pickup-plan, the dashboard. Full
+build plan: `07-phase4-cost-intelligence.md`.
+
+Built: supplier CRUD and price history (`apps/api/src/routes/suppliers.ts`) — manual
+price entry (`source` hard-pinned to `"manual"`) and receipt-confirmed entry both
+maintain one current `supplier_price` row per `(tenant, supplier, item)` by updating
+the existing row in place (`prev_price` set from what was current, then overwritten),
+never accumulating duplicates; receipt capture (`apps/api/src/routes/receipts.ts`) —
+`POST /receipts` runs an uploaded photo through a fixture-backed OCR stub
+(`receipt-ocr-provider.ts` — deliberately not a real vendor; architecture §6 requires a
+~20-real-receipt evaluation before committing to one, still pending) and writes only
+`receipt`/`receipt_line` rows, matched lines by case-insensitive name/SKU, unmatched
+lines left `item_id = null` for office review; `POST /receipts/:id/confirm` is the only
+place OCR-derived data becomes a `supplier_price` row, and only for the human-selected
+`line_ids`, using the same update-in-place logic as manual entry; sourcing and
+pickup-plan (`apps/api/src/domain/sourcing.ts`) — faithful ports of the prototype's
+`sourcingOptions` (price-ascending) and `pickupPlan` (items-covered desc, open-now desc,
+price asc) algorithms, same sort keys, backed by a fixture-only `places-provider.ts` for
+open-now/distance (same deferred-vendor-choice reasoning as OCR — no real Google Places
+credentials); the dashboard (`apps/api/src/routes/dashboard.ts`) — five thin reads over
+`v_first_time_fix_rate`/`v_hours_variance`/`v_readiness_correlation`/`v_price_alerts`
+plus a `recommended-actions` endpoint that turns those numbers into sentences, no
+JS-side re-derivation of the underlying arithmetic. The `apps/web` Dashboard and
+Suppliers pages (previously honest placeholders, see Phase 2 above) are now wired to
+this real data, and the phone client's prep-result screen has its supplier pickup-plan
+suggestion card restored now that the sourcing API it needed exists. See
+`apps/api/README.md`'s Phase 4 section and `apps/web/README.md` for the full rundown.
+
+**Exit criterion proven, not assumed:** `npm run proof:phase4` (root) spins up the real
+API as a child process and, over HTTP only: seeds suppliers/prices and confirms a price
+rise is recorded with `prev_price` set; uploads a receipt through the fixture OCR
+provider and confirms selective confirmation (`POST /receipts/:id/confirm` on a subset
+of `line_ids`) writes `supplier_price` rows for exactly the confirmed, matched lines and
+nothing else; confirms `GET /catalog-items/:id/sourcing` returns strictly
+price-ascending results; seeds a 4-supplier pickup-plan fixture and confirms the
+(coverage desc, open-now desc, price asc) order against a hand-computed expectation;
+confirms `GET /dashboard/price-alerts` and `GET /dashboard/recommended-actions` surface
+a real seeded price rise and its cheaper alternative; then, the same class of
+crash-recovery proof the other three phases run — kills the server, writes
+`job.actual_hours` directly against the same on-disk data while it's down, restarts the
+server, and confirms `GET /dashboard/hours-variance` / `GET
+/dashboard/first-time-fix-rate` match independently hand-computed raw-SQL expectations
+on the live restarted server. 29/29 checks passing — `apps/api/test/phase4-proof.mjs`.
+
+As with the other phases, this is the code and its own proof, not a claim about
+real-world numbers: the 30-real-jobs bar noted above is about trusting the *dashboard's
+conclusions* once real usage accumulates, not about whether the code exists — that
+still needs to happen after rollout, same as it always did.
+
+All four phases in the build order above are now built and proven: `npm run build`,
+`verify-schema.mjs`, `verify-seed.mjs`, `proof:phase1` (21/21), `proof:phase2` (37/37),
+`proof:phase3` (37/37), `proof:phase4` (29/29), and `apps/web`'s `smoke:web` (23/23) all
+pass together against the current schema and seed.
 
 ## What to run in parallel with Phase 1, not after it
 

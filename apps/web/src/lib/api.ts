@@ -111,6 +111,39 @@ export async function uploadPhoto(
 }
 
 /**
+ * Multipart receipt upload for a Client Component — POST /receipts. Same
+ * "fields before file part" shape as uploadPhoto above (required for
+ * @fastify/multipart to see data.fields by the time req.file() resolves,
+ * per apps/api/src/routes/receipts.ts's own comment).
+ */
+export async function uploadReceipt(
+  file: File,
+  metadata: { supplier_id?: string; doc_number?: string; receipt_date?: string }
+): Promise<{
+  id: string;
+  lines: {
+    id: string;
+    tenant_id: string;
+    receipt_id: string;
+    item_id: string | null;
+    description: string;
+    qty: string;
+    unit_price: string;
+  }[];
+}> {
+  const formData = new FormData();
+  if (metadata.supplier_id) formData.append("supplier_id", metadata.supplier_id);
+  if (metadata.doc_number) formData.append("doc_number", metadata.doc_number);
+  if (metadata.receipt_date) formData.append("receipt_date", metadata.receipt_date);
+  formData.append("file", file);
+
+  return apiFetch("/receipts", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+/**
  * Fetch helper for use from Server Components, layouts, and route
  * handlers. Manually forwards the fr_session cookie from the incoming
  * request — Server Component fetches otherwise arrive at the API with no

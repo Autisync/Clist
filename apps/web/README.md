@@ -63,13 +63,33 @@ technician close-out display, and a separate, visually distinct
 office-only `rework_cause` control — never the same form the technician
 submits).
 
-**Dashboard and Suppliers are honestly incomplete, not faked.** Neither
-`/api/dashboard/*` nor any supplier/price/receipt route exists yet (Phase 4
-— `07-phase4-cost-intelligence.md`). The Dashboard shows what's genuinely
-derivable today from `GET /jobs` + per-job readiness (status counts, a
-blocked-jobs list) with a clearly labeled "coming in Phase 4" card below
-it. Suppliers is a single honest placeholder page. Fabricating numbers or
-mock supplier cards here would have been worse than an admitted gap.
+**Dashboard and Suppliers are real pages now (Phase 4 —
+`07-phase4-cost-intelligence.md`), wired to real API data, not placeholders
+any more.**
+
+- **Dashboard** (`/office`, `page.tsx`) — the business-metrics card that
+  used to say "coming in Phase 4" is now wired to the five real
+  `GET /dashboard/*` endpoints, thin reads over `03-schema.sql`'s views;
+  nothing on this page is hardcoded. Structure ported from
+  `fieldready-prototype.jsx`'s `<Dashboard>`: the stat grid, the
+  readiness-correlation headline insight, hours-variance-by-job-type and
+  first-time-fix-trend charts (plain flexbox bars — no `recharts`
+  dependency added), the price-alerts list, and recommended actions. Per
+  CLAUDE.md/PRD, the numbers here are real as of this wiring, but the
+  project's trust bar is on the dashboard's *conclusions* until 30+ real
+  closed jobs exist — a data-volume fact, not a reason to withhold the code
+  path, so small-sample sections say so plainly instead of hiding the
+  (accurate) numbers.
+- **Suppliers** (`/office/suppliers`) — a Server Component fetches the
+  initial supplier list + catalog items; supplier selection, the price
+  table, manual add-price form, and receipt upload/review/confirm are a
+  client component, ported from the prototype's `<Suppliers>` (supplier
+  card grid, selected-supplier detail with open-state, price table with a
+  "Digitalizar recibo" action). Receipt confirmation is a genuinely
+  selective UI: each parsed line can be checked/unchecked before
+  `POST /receipts/:id/confirm`, and an unmatched ("sem correspondência")
+  line is shown but can't be confirmed at all — matching the API's own
+  refusal to write a price with no `item_id`.
 
 ## Field (`/field/*`) — the offline-first technician phone client
 
@@ -80,6 +100,15 @@ prep-result → site (execution steps) → tests (per-outlet measurement,
 photo capture with a manual-entry fallback that always works) → voice
 (recorded note with a functional textarea fallback — voice is never
 mandatory) → done.
+
+**The prep-result "Passar por" supplier-pickup card is restored** (Phase 4 —
+`07-phase4-cost-intelligence.md` §4): `prep-result/page.tsx` used to omit it
+on purpose, by its own comment, because no sourcing API existed yet. Now
+that `GET /jobs/:id/pickup-plan` exists, the page fetches it whenever the
+job has missing materials and shows the best pickup option (same
+`(items covered desc, open-now desc, total price asc)` ordering
+`domain/sourcing.ts` computes server-side — the client renders, it doesn't
+re-sort).
 
 ### The offline sync queue (`src/lib/offline-queue.ts`)
 
@@ -143,8 +172,9 @@ technician), full quote → job → dispatch creation through the proxy (not
 the API directly — this is what actually proves cookie forwarding works),
 every `/field/*` route, the manifest/service-worker files, and the exact
 sync contract `offline-queue.ts` depends on (`applied`, then
-`already_applied` on replay). 22 checks, all passing as of this writing.
+`already_applied` on replay). 23 checks, all passing as of this writing.
 
-`npm run proof:phase1` / `npm run proof:phase2` (the API's own exit
-criteria) are unaffected by anything in this app and should stay that way —
-re-run them after touching `apps/api`, not just `apps/web`.
+`npm run proof:phase1` / `npm run proof:phase2` / `npm run proof:phase3` /
+`npm run proof:phase4` (the API's own exit criteria) are unaffected by
+anything in this app and should stay that way — re-run them after touching
+`apps/api`, not just `apps/web`.

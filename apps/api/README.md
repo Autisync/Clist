@@ -339,3 +339,107 @@ independently computed, not the same code path being tested twice.
 `domain/ref.ts`, `domain/deadlines.ts`, `domain/closeout.ts`,
 `routes/ref.ts`, `routes/termo.ts`, `routes/compliance.ts`, or
 `packages/core/src/deadlines.ts`.
+
+## Phase 4 — cost intelligence
+
+Per `07-phase4-cost-intelligence.md`: suppliers/prices, receipts (OCR-assisted,
+human-confirmed), sourcing/pickup-plan, and the dashboard views — all thin
+reads or human-gated writes over data the schema and Phase 1–3 already
+produce. No new domain concept requiring its own gate the way dispatch/REF
+did; the one rule this phase exists to enforce is the OCR→price boundary
+below.
+
+- **Suppliers & prices** (`routes/suppliers.ts`) — trivial CRUD for
+  `supplier`, plus `GET /suppliers/:id/prices` and the direct manual-entry
+  route `POST /suppliers/:id/prices`. `source` is hard-pinned to `"manual"`
+  on this route regardless of what the request body says — `"receipt"`
+  source only ever comes from the human `POST /receipts/:id/confirm` step.
+  `supplier_price` holds **one current row per `(tenant, supplier, item)`**:
+  on write, the existing row (if any) is `UPDATE`d in place — `prev_price`
+  set to what was current a moment ago, `price`/`source`/`effective_at`
+  overwritten — the same "overwrite, not supersede" v1 scope call
+  `apps/api/README.md`'s Phase 2 section already names for equipment
+  calibration.
+- **Receipts** (`routes/receipts.ts`) — `POST /receipts` accepts a multipart
+  photo, stores the bytes via the existing `ObjectStore` (unchanged, reused
+  exactly as Phase 2/3 built it for job photos and REF PDFs), and runs it
+  through `receipt-ocr-provider.ts`. **`receipt-ocr-provider.ts` is a
+  fixture stub, deliberately not a real OCR vendor** — architecture §6 and
+  `07-phase4-cost-intelligence.md` §3 are explicit that picking a real OCR
+  vendor needs evaluation against ~20 real receipts this codebase doesn't
+  have yet; the interface (`parse(buffer): {doc_number, receipt_date,
+  lines}`) is real and swappable, the implementation behind it returns
+  deterministic canned data, no network call, no API key, nothing new in
+  `package.json`. Parsed lines are matched to `catalog_item` by
+  case-insensitive name/SKU; a line with no match gets `item_id = null`
+  ("sem correspondência") and is inserted for office review, never dropped
+  and never guessed at. **`POST /receipts` writes only `receipt` and
+  `receipt_line` rows — never `supplier_price`.** `POST
+  /receipts/:id/confirm` is the one human-gated write: given a set of
+  `line_ids`, for each confirmed line that has a matched `item_id` and a
+  receipt-level `supplier_id`, it writes `supplier_price` — using the exact
+  same look-up-then-`UPDATE`-in-place-else-`INSERT` logic as the manual
+  route above, so repeat confirmations of receipts for the same
+  supplier+item overwrite the current row instead of accumulating duplicate
+  "current" rows (a real bug an adversarial review caught and this pass
+  fixed — the confirm route originally always `INSERT`ed). Unconfirmed
+  lines, and confirmed lines with no item match, are left alone entirely —
+  genuinely selective, not all-or-nothing.
+- **Sourcing & pickup-plan** (`domain/sourcing.ts`, new routes on
+  `catalog.ts` and `jobs.ts`) — ports of the prototype's settled algorithms
+  (`fieldready-prototype.jsx`'s `sourcingOptions`, `openState`,
+  `pickupPlan`), same sort keys, not redesigned. `GET
+  /catalog-items/:id/sourcing` returns every supplier currently pricing
+  that item, sorted by price ascending only. `GET /jobs/:id/pickup-plan`
+  covers a job's still-`missing` mandatory materials, sorted by (items
+  covered desc, currently-open-now desc, total price asc) — a different
+  tie-break from plain sourcing, not a variant of the same one.
+  `places-provider.ts` (open-now / distance) is the second fixture stub in
+  this phase, same deferred-vendor-choice reasoning as the OCR provider —
+  a hardcoded Lisbon-address map, no Google Places credentials anywhere.
+- **Dashboard** (`routes/dashboard.ts`) — five thin-read routes
+  (`v_first_time_fix_rate`, `v_hours_variance`, `v_readiness_correlation`,
+  `v_price_alerts`, plus `recommended-actions`) selecting directly from the
+  views the schema already ships; only `recommended-actions` turns numbers
+  into sentences, as speced — no JS-side re-derivation of the underlying
+  arithmetic anywhere else.
+
+### Proving the Phase 4 exit criterion
+
+```bash
+npm run proof:phase4        # from the repo root
+```
+
+`test/phase4-proof.mjs` follows the same real-child-process, real-HTTP shape
+as the other three proof scripts. It creates suppliers and prices, confirms
+`GET /suppliers/:id/prices` reflects a seeded price rise with `prev_price`
+recorded; uploads a receipt through the fixture OCR provider and confirms a
+strict subset of matched lines, checking the resulting `supplier_price` rows
+match exactly the confirmed set (matched-but-unconfirmed lines absent,
+unmatched "sem correspondência" line untouched); checks `GET
+/catalog-items/:id/sourcing` returns strictly price-ascending results; seeds
+a 4-supplier pickup-plan fixture and asserts the order against a
+hand-computed (coverage desc, open-now desc, price asc) expectation;
+confirms `GET /dashboard/price-alerts` surfaces a real price rise with the
+correct cheaper alternative supplier and `GET
+/dashboard/recommended-actions` generates its supplier-switch sentence from
+that live data; then, the same class of crash-recovery proof the other
+three phases run — kills the server, writes `job.actual_hours` directly on
+the same on-disk data while it's down (never two processes open against the
+same PGlite data directory at once), restarts the server, and confirms `GET
+/dashboard/hours-variance` and `GET /dashboard/first-time-fix-rate` match
+independently hand-computed raw-SQL expectations on the live restarted
+server, not a cache.
+
+29 checks, all passing as of this writing. Re-run after touching
+`domain/sourcing.ts`, `routes/suppliers.ts`, `routes/receipts.ts`,
+`routes/dashboard.ts`, `receipt-ocr-provider.ts`, or `places-provider.ts`.
+
+**On the 30-real-jobs trust bar** (PRD / `CLAUDE.md`'s Phase 4 entry): that
+gate is about whether the dashboard's *conclusions* are worth trusting
+(first-time-fix rate, hours variance, price alerts computed over a
+realistic volume of real closed jobs), not about whether the code exists.
+The routes, views, and proof above are real and green today against seeded/
+fixture data; nothing in this pass claims the dashboard's numbers mean
+anything yet in production — that's a data-volume question for after
+rollout, not an engineering one this commit can shortcut.

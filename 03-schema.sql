@@ -801,6 +801,42 @@ group by j.tenant_id, j.job_type;
 grant select on v_job_readiness, v_first_time_fix_rate, v_hours_variance to fieldready_app;
 
 -- ============================================================================
+-- 13a. Cost-intelligence views — Phase 4 addition (07-phase4-cost-intelligence.md
+-- §1-2). Same "the dashboard reads views, not raw tables" rule as §13 above.
+-- ============================================================================
+
+-- Any supplier_price row that jumped more than 3% since its previous price.
+-- Ported directly from fieldready-prototype.jsx's priceAlerts (line 455).
+-- GET /dashboard/price-alerts joins this to /catalog-items/:id/sourcing's
+-- ranking to attach the cheaper alternative, same as the prototype does
+-- client-side today (07-phase4-cost-intelligence.md §2).
+create view v_price_alerts as
+select sp.tenant_id, sp.item_id, sp.supplier_id, sp.price, sp.prev_price,
+       round(100.0 * (sp.price - sp.prev_price) / nullif(sp.prev_price, 0), 1) as delta_pct
+from supplier_price sp
+where sp.prev_price is not null and sp.price > sp.prev_price * 1.03;
+
+-- The prototype's headline chart (Dashboard function, fieldready-prototype.jsx
+-- line ~426): bucket jobs into readiness=100 ("gated") vs readiness<100
+-- ("ungated") and compare rework rate (share of !first_time_fix) between the
+-- two buckets. Only closed jobs count, matching v_first_time_fix_rate's own
+-- `where closed_at is not null` filter.
+create view v_readiness_correlation as
+select
+  jr.tenant_id,
+  case when jr.readiness_pct = 100 then 'gated' else 'ungated' end as readiness_bucket,
+  count(*) as jobs,
+  count(*) filter (where not jc.first_time_fix) as rework_jobs,
+  round(100.0 * count(*) filter (where not jc.first_time_fix) / nullif(count(*), 0), 1) as rework_pct
+from v_job_readiness jr
+join job_closeout jc on jc.job_id = jr.job_id
+where jc.closed_at is not null
+  and jr.readiness_pct is not null
+group by jr.tenant_id, case when jr.readiness_pct = 100 then 'gated' else 'ungated' end;
+
+grant select on v_price_alerts, v_readiness_correlation to fieldready_app;
+
+-- ============================================================================
 -- 14. Indexes beyond what unique constraints already provide
 -- ============================================================================
 

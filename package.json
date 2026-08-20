@@ -14,6 +14,7 @@
     "proof:phase1": "npm run proof --workspace=apps/api",
     "proof:phase2": "npm run proof:phase2 --workspace=apps/api",
     "proof:phase3": "npm run proof:phase3 --workspace=apps/api",
+    "proof:phase4": "npm run proof:phase4 --workspace=apps/api",
     "smoke:web": "node apps/web/test/smoke.mjs",
     "verify:schema": "node verify-schema.mjs 03-schema.sql",
     "verify:seed": "node verify-seed.mjs 03-schema.sql seed.sql"

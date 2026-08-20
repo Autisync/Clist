@@ -8,6 +8,8 @@ import { templateRoutes } from "./routes/templates.js";
 import { syncRoutes } from "./routes/sync.js";
 import { catalogRoutes } from "./routes/catalog.js";
 import { clientRoutes } from "./routes/clients.js";
+import { supplierRoutes } from "./routes/suppliers.js";
+import { receiptRoutes } from "./routes/receipts.js";
 import { quoteRoutes } from "./routes/quotes.js";
 import { jobRoutes } from "./routes/jobs.js";
 import { vanAuditRoutes } from "./routes/van-audits.js";
@@ -16,6 +18,7 @@ import { followUpActionRoutes } from "./routes/follow-up-actions.js";
 import { refRoutes } from "./routes/ref.js";
 import { termoRoutes } from "./routes/termo.js";
 import { complianceRoutes } from "./routes/compliance.js";
+import { dashboardRoutes } from "./routes/dashboard.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   await getDb(); // boot/migrate before accepting requests
@@ -41,6 +44,8 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(syncRoutes);
   await app.register(catalogRoutes);
   await app.register(clientRoutes);
+  await app.register(supplierRoutes);
+  await app.register(receiptRoutes);
   await app.register(quoteRoutes);
   await app.register(jobRoutes);
   await app.register(vanAuditRoutes);
@@ -49,6 +54,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(refRoutes);
   await app.register(termoRoutes);
   await app.register(complianceRoutes);
+  await app.register(dashboardRoutes);
 
   return app;
 }

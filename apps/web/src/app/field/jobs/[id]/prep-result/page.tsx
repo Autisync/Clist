@@ -13,19 +13,34 @@
  * browsing), send the technician back to /prep rather than render a
  * meaningless empty/green screen.
  *
- * The prototype's "Rota de recolha sugerida" supplier-pickup card is
- * deliberately omitted — there is no sourcing/supplier-price API yet
- * (Phase 4, project brief's build order), so faking supplier data isn't an
- * option. A short note marks it as deferred instead. Everything else
- * (missing-items list, the office-notified copy, "Cheguei ao local") is
- * kept faithful to the prototype.
+ * The "Passar por" supplier-pickup card (07-phase4-cost-intelligence.md
+ * §4, GET /jobs/:id/pickup-plan) is restored here now that the sourcing
+ * API exists: when there are missing materials, fetch the job's pickup
+ * plan and show its top recommendation — supplier name, address, open/
+ * closed state, distance, "Levar-me lá" — matching
+ * fieldready-prototype.jsx's prepresult screen (~line 1534) exactly. If no
+ * supplier has a price on record for any missing item, the plan comes back
+ * empty and the card says so honestly instead of showing nothing.
  */
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { CheckCircle2, AlertTriangle, XCircle } from "lucide-react";
+import { CheckCircle2, AlertTriangle, XCircle, Navigation, MapPin } from "lucide-react";
 import { BigButton } from "@/components/field/BigButton";
+import { apiFetch } from "@/lib/api";
 import { prepStorageKey, type PrepAnswerItem } from "../_lib/prep";
+
+type PickupPlanEntry = {
+  supplier: {
+    id: string;
+    name: string;
+    address: string | null;
+    distance_km: number | string | null;
+  };
+  state: { open: boolean; text: string };
+  items: { checklist_item_id: string; label: string; item_id: string; qty: number; price: number }[];
+  total: number;
+};
 
 type LoadState =
   | { kind: "loading" }
@@ -38,6 +53,7 @@ export default function PrepResultPage() {
   const router = useRouter();
 
   const [state, setState] = useState<LoadState>({ kind: "loading" });
+  const [pickupPlan, setPickupPlan] = useState<PickupPlanEntry[] | null>(null);
 
   useEffect(() => {
     let raw: string | null = null;
@@ -66,11 +82,31 @@ export default function PrepResultPage() {
     }
   }, [state.kind, jobId, router]);
 
+  // Fetch the supplier pickup plan once there's something missing —
+  // GET /jobs/:id/pickup-plan (07-phase4-cost-intelligence.md §4) reads the
+  // job's own missing mandatory checklist items server-side, so this call
+  // needs no payload beyond the job id.
+  useEffect(() => {
+    if (state.kind !== "ready" || state.missing.length === 0) return;
+    let cancelled = false;
+    apiFetch<{ plan: PickupPlanEntry[] }>(`/jobs/${jobId}/pickup-plan`)
+      .then((res) => {
+        if (!cancelled) setPickupPlan(res.plan);
+      })
+      .catch(() => {
+        if (!cancelled) setPickupPlan([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [state, jobId]);
+
   if (state.kind === "loading" || state.kind === "missing-data") {
     return <div className="h-full bg-white" />;
   }
 
   const { missing } = state;
+  const best = pickupPlan && pickupPlan.length > 0 ? pickupPlan[0] : null;
 
   if (missing.length === 0) {
     return (
@@ -108,10 +144,43 @@ export default function PrepResultPage() {
           ))}
         </div>
 
-        <div className="mt-4 p-3 rounded-xl bg-zinc-50 border-2 border-zinc-200 text-sm text-zinc-500">
-          Sugestão de fornecedor mais próximo: disponível numa fase seguinte (comparação de
-          preços/fornecedores ainda não implementada).
-        </div>
+        {best ? (
+          <div className="mt-4 p-4 rounded-xl bg-cyan-50 border-2 border-cyan-300">
+            <div className="text-sm font-semibold text-cyan-900 uppercase">Passar por</div>
+            <div className="text-xl font-bold mt-1 leading-tight">
+              {best.supplier.name.split("—")[0].trim()}
+            </div>
+            {best.supplier.address && (
+              <div className="text-base text-zinc-700">{best.supplier.address.split(",")[0]}</div>
+            )}
+            <div className="mt-2 flex items-center gap-2 text-base flex-wrap">
+              {best.state.open ? (
+                <>
+                  <CheckCircle2 className="w-5 h-5 text-green-700" />
+                  <span className="text-green-800 font-semibold">{best.state.text}</span>
+                </>
+              ) : (
+                <>
+                  <XCircle className="w-5 h-5 text-red-700" />
+                  <span className="text-red-800 font-semibold">{best.state.text}</span>
+                </>
+              )}
+              {best.supplier.distance_km !== null && (
+                <span className="text-zinc-500 flex items-center gap-1">
+                  <MapPin className="w-3.5 h-3.5" />
+                  {best.supplier.distance_km} km
+                </span>
+              )}
+            </div>
+            <div className="mt-3">
+              <BigButton icon={Navigation}>Levar-me lá</BigButton>
+            </div>
+          </div>
+        ) : pickupPlan !== null ? (
+          <div className="mt-4 p-3 rounded-xl bg-zinc-50 border-2 border-zinc-200 text-sm text-zinc-500">
+            Sem fornecedor com preço registado para os itens em falta.
+          </div>
+        ) : null}
 
         <div className="mt-4">
           <BigButton tone="ghost" onClick={() => router.push(`/field/jobs/${jobId}/site`)}>

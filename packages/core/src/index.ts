@@ -3,6 +3,8 @@ export * from "./template.js";
 export * from "./sync.js";
 export * from "./catalog.js";
 export * from "./client.js";
+export * from "./supplier.js";
+export * from "./receipt.js";
 export * from "./quote.js";
 export * from "./job.js";
 export * from "./checklist.js";

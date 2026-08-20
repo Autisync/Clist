@@ -10,7 +10,8 @@
     "build": "tsc -p .",
     "proof": "node test/phase1-proof.mjs",
     "proof:phase2": "node test/phase2-proof.mjs",
-    "proof:phase3": "node test/phase3-proof.mjs"
+    "proof:phase3": "node test/phase3-proof.mjs",
+    "proof:phase4": "node test/phase4-proof.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.5",
