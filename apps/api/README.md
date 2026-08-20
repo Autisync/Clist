@@ -462,3 +462,61 @@ The routes, views, and proof above are real and green today against seeded/
 fixture data; nothing in this pass claims the dashboard's numbers mean
 anything yet in production — that's a data-volume question for after
 rollout, not an engineering one this commit can shortcut.
+
+## Supabase-native migration — §6 Step 1
+
+Design: `08-supabase-native-migration.md`. Not live, not wired to anything —
+this is new, parallel infrastructure standing entirely apart from the
+PGlite-backed system above, which remains the system of record until a
+later `§6` step cuts real traffic over, slice by slice.
+
+`supabase/schema.sql` is a faithful derivative of `../../03-schema.sql`
+against a real Supabase Postgres project, with exactly the identity/RLS
+changes the design doc's trust-model shift requires (browser talks to
+Postgres directly; RLS is the *only* boundary, not backed up by a Fastify
+layer that already decided). It also documents and fixes one real gap the
+design doc's own §8 left open: `app_user.id == auth.uid()` was reasoned
+only for office users — a technician never has a login of their own under
+this design (only their *paired device* does), so `app_user` keeps its own
+independent id, and a nullable `auth_user_id` column carries the
+office/owner login link instead. See the file's own header and §2 comments
+for the full reasoning, including why `fn_current_tenant_id()` needs a
+`no force row level security` carve-out on exactly two tables to avoid a
+chicken-and-egg identity-resolution failure.
+
+`supabase/verify-schema-supabase.mjs` is the equivalent of `verify-schema.mjs`
+run against the real project instead of PGlite — same checks (tenant
+isolation, fail-safe with no identity, system-template cross-tenant
+visibility, the activation gate, REF/termo reconciliation, dashboard views,
+full RLS coverage), rewritten around `auth.uid()` instead of
+`current_setting`, plus two checks that have no equivalent under the
+current design at all: an anon/no-JWT request failing safe, and — the one
+§3 calls out as new and required, not optional — a **revoked device with a
+still-valid token** being denied by `fn_current_tenant_id()`'s explicit
+`revoked_at is null` re-check, not by sign-in-time enforcement a live token
+has already passed. 17/17 checks passing as of this writing.
+
+```bash
+npm run verify:schema-supabase   # from the repo root
+```
+
+**This is not like the other verify/proof scripts** — it connects to and
+mutates a real, live external Supabase project (direct Postgres connection
+as the `postgres` role, plus Auth Admin API calls to create/delete real
+`auth.users` rows for the test fixtures). It needs
+`SUPABASE_PROJECT_REF`/`SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_DB_PASSWORD` in
+`apps/api/.env` (never committed — see `.env.example` for the names only)
+and is not wired into `npm run build` or any other aggregate script for
+that reason. It resets only the specific objects `schema.sql` itself
+creates before reapplying (never `drop schema public cascade`, which would
+risk Supabase's own extension objects living in `public`), and sweeps real
+Auth test users by their fixed `@device.fieldready.internal` email suffix
+at the start of each run so failed/interrupted runs don't accumulate
+cruft on the live project — verified empirically (see commit history), not
+assumed.
+
+Not started yet: office-auth wiring (`§6` step 2), the RPC-function porting
+for the five sync mutation types plus `dispatch_job`/`create_job_from_quote`
+(`§4`), and the `pt_holiday` table replacing the `date-holidays` npm
+dependency. `apps/api/src/db.ts`, every existing route, and `03-schema.sql`
+itself are untouched by this work.
