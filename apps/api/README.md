@@ -555,25 +555,35 @@ at the start of each run so failed/interrupted runs don't accumulate
 cruft on the live project — verified empirically (see commit history), not
 assumed.
 
-### §6 Step 2 — office auth, in progress
+### §6 Step 2 — office auth, exit criterion met
 
 `supabase/verify-office-auth.mjs` proves the real claim §6 step 2 makes: a
 real office user signs in via actual Supabase Auth (password, anon key —
 the exact mechanism a browser uses, not a simulated GUC), and a real
 PostgREST query through that session is RLS-scoped with zero Fastify route
-in the path. Also checks wrong-password rejection, the anon key itself
-being unable to touch the Auth Admin API, and unauthenticated requests
-failing safe. Written, syntax-checked, and reviewed, but **not yet run** —
-it needs the project's `anon` key (`SUPABASE_ANON_KEY` in `apps/api/.env`,
-`NEXT_PUBLIC_SUPABASE_ANON_KEY` in `apps/web/.env.local`), a different key
-from the `service_role` one already in place, and deliberately not
-something to fake or substitute given what this step is specifically
-proving.
+in the path. **11/11 checks passing against the real project**, confirmed
+twice in a row for idempotency, and confirmed the success-path cleanup
+genuinely leaves no stray fixture rows behind (checked directly against the
+live project, not just trusted from the script's own "OK" line):
+
+```bash
+npm run verify:office-auth-supabase   # from the repo root
+```
+
+Covers: real sign-in for two office users in two different tenants; wrong
+password rejected by Supabase Auth itself; each user's real PostgREST
+query against `client` and `tenant` returns exactly its own tenant's row,
+nothing else — cross-tenant isolation holding over the actual HTTP surface
+a browser uses, not a simulated one; an unauthenticated request (no
+session at all) returns zero rows; and the anon key itself is confirmed
+unable to call the Auth Admin API (403) — it carries no elevated power on
+its own, RLS plus a valid session is the only way in.
 
 `apps/web/src/lib/supabase/{env,client,server}.ts` are the browser/server
 Supabase client factories for later slices — typechecked, not yet imported
 from any real page (deliberately: nothing in `apps/web`'s existing
-Fastify-backed login is touched by this work).
+Fastify-backed login is touched by this work). Wiring an actual `/office/*`
+login page to these is the next slice, not yet started.
 
 Not started yet: the RPC-function porting for the five sync mutation types
 plus `dispatch_job`/`create_job_from_quote` (`§4`), and the `pt_holiday`
