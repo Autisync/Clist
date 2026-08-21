@@ -653,7 +653,266 @@ revoke execute on function rpc_dispatch_job(uuid) from public;
 grant execute on function rpc_dispatch_job(uuid) to authenticated;
 
 -- ============================================================================
--- End of this slice. Deliberately not here yet: create_job_from_quote() —
--- genuinely more complex (slugification, two template-coding conventions,
--- checklist materialization, quote-line merge) and gets its own slice.
+-- Final Step 4 slice: rpc_create_job_from_quote(). Port of
+-- apps/api/src/domain/job-creation.ts's createJobFromQuote() PLUS
+-- apps/api/src/routes/quotes.ts's POST /quotes/:id/create-job wrapper (quote
+-- validation, collision-safe JOB-XXXX code generation, job row insertion) —
+-- one atomic function instead of a route that calls a domain function inside
+-- one Fastify-managed transaction, same reasoning every other RPC in this
+-- file already follows.
+--
+-- ============================================================================
+
+-- fn_slugify: a security review of this file's first draft (unaccent()-
+-- based) found and independently confirmed a real divergence from
+-- job-creation.ts's slugify() for the Portuguese ordinal indicators º/ª
+-- (everyday PT business text — floor numbers, "nº") and several other
+-- extended-Latin characters (ß, œ, æ, ł, dotless ı): unaccent()'s
+-- translation table *expands* these into extra ASCII letters (º -> "o",
+-- ß -> "ss"), while slugify()'s actual algorithm — NFD-normalize, then
+-- strip ONLY the Unicode combining-marks block (̀-ͯ) — leaves
+-- characters with no canonical NFD decomposition untouched, so they fall
+-- through to the non-alphanumeric collapse and get dropped/hyphenated
+-- instead. unaccent() was never actually equivalent to what slugify() does;
+-- it was a broader, different transformation that happened to agree on the
+-- standard-Portuguese-diacritics subset the first five test strings covered.
+--
+-- Fixed by using Postgres's native normalize(text, form) (built in since
+-- PG13, no extension needed) to replicate the JS algorithm literally
+-- instead of approximating it with a different one: NFD-normalize, strip
+-- the same ̀-ͯ combining-marks range slugify()'s own regex names,
+-- lowercase, collapse non-alphanumeric runs to a hyphen, trim. Re-verified
+-- against 18 real test strings this time — every case the review found
+-- diverging (º/ª ordinals, ß, œ, æ, ł, dotless ı) plus digits-only,
+-- punctuation-only, already-hyphenated, empty string, and non-Latin scripts
+-- (CJK, Cyrillic) — all byte-for-byte identical to the real JS output, not
+-- assumed from reading the two algorithms side by side.
+create or replace function fn_slugify(p_input text)
+returns text
+language sql
+immutable
+as $$
+  select trim(both '-' from regexp_replace(
+    regexp_replace(normalize(lower(p_input), NFD), '[̀-ͯ]', '', 'g'),
+    '[^a-z0-9]+', '-', 'g'
+  ));
+$$;
+
+revoke execute on function fn_slugify(text) from public;
+grant execute on function fn_slugify(text) to authenticated;
+
+-- fn_infer_network_type: literal port of job-creation.ts's
+-- inferNetworkTypeFromJobType() — same keyword lists, same priority order
+-- (FO checked before CC before SMATV before PC, since "coax"/"coaxial"
+-- would otherwise ambiguously match both the CC and SMATV branches).
+create or replace function fn_infer_network_type(p_job_type text)
+returns text
+language plpgsql
+immutable
+as $$
+declare
+  v_tokens text[];
+begin
+  v_tokens := string_to_array(fn_slugify(p_job_type), '-');
+  if v_tokens && array['fibra','fibre','optica','otica','fo'] then return 'FO'; end if;
+  if v_tokens && array['coletiva','colectiva'] then return 'CC'; end if;
+  if v_tokens && array['tdt','coax','coaxial','smatv','sat','antena','mastro'] then return 'SMATV'; end if;
+  if v_tokens && array['estruturada','cablagem','utp','ftp','rj45','cat6','cat5e'] then return 'PC'; end if;
+  return null;
+end;
+$$;
+
+revoke execute on function fn_infer_network_type(text) from public;
+grant execute on function fn_infer_network_type(text) to authenticated;
+
+-- rpc_create_job_from_quote: the full port. Not part of the sync-mutation
+-- family (no client_mutation_id) — job creation from an accepted quote was
+-- never a queued offline mutation in the original design either, it's a
+-- direct, synchronous office-side action, same category as
+-- rpc_dispatch_job.
+--
+-- FOR UPDATE on the quote row is added here even though the reference
+-- implementation has no equivalent lock — worth being explicit about what
+-- it does and doesn't buy: quote.status never transitions away from
+-- 'accepted' after a job is created (matching the TS version exactly, not
+-- a gap introduced here), so nothing prevents a SECOND, later, sequential
+-- call on the same already-accepted quote from creating a second job — the
+-- lock only closes the narrower window of two truly *simultaneous* calls
+-- racing each other, it does not retroactively invent a one-job-per-quote
+-- invariant the original system never had. Not fixed into different
+-- behavior here, per this file's own standing rule for every other port.
+create or replace function rpc_create_job_from_quote(p_quote_id uuid)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_tenant_id uuid;
+  v_quote record;
+  v_slug text;
+  v_compliance_profile text;
+  v_readiness_body jsonb;
+  v_execution_body jsonb;
+  v_test_protocol_body jsonb;
+  v_network_type text;
+  v_code text;
+  v_attempt int := 0;
+  v_candidate text;
+  v_candidate_exists boolean;
+  v_job_id uuid;
+  v_item jsonb;
+  v_covered_item_ids uuid[] := array[]::uuid[];
+  v_item_id uuid;
+  v_qty numeric;
+  v_mandatory boolean;
+  v_by_job int := 0;
+  v_by_van int := 0;
+  v_by_office int := 0;
+  v_line record;
+  v_merged_from_quote int := 0;
+begin
+  v_tenant_id := fn_current_tenant_id();
+  if v_tenant_id is null then
+    raise exception 'rpc_create_job_from_quote: no tenant context resolved for this session';
+  end if;
+
+  select client_id, job_type, quoted_hours, quoted_materials, status
+    into v_quote
+    from quote where id = p_quote_id for update;
+
+  if not found then
+    return jsonb_build_object('kind', 'not_found');
+  end if;
+
+  if v_quote.status <> 'accepted' then
+    return jsonb_build_object('kind', 'not_accepted');
+  end if;
+
+  -- Collision-safe JOB-<4-digit> code, same check-then-insert retry loop
+  -- (up to 20 attempts) as routes/quotes.ts.
+  while v_code is null and v_attempt < 20 loop
+    v_attempt := v_attempt + 1;
+    v_candidate := 'JOB-' || (1000 + floor(random() * 9000))::int::text;
+    select exists(select 1 from job where tenant_id = v_tenant_id and code = v_candidate) into v_candidate_exists;
+    if not v_candidate_exists then
+      v_code := v_candidate;
+    end if;
+  end loop;
+
+  if v_code is null then
+    return jsonb_build_object('kind', 'code_collision');
+  end if;
+
+  insert into job (tenant_id, quote_id, client_id, code, title, job_type, quoted_hours, quoted_materials)
+  values (v_tenant_id, p_quote_id, v_quote.client_id, v_code, v_quote.job_type, v_quote.job_type, v_quote.quoted_hours, v_quote.quoted_materials)
+  returning id into v_job_id;
+
+  -- createJobFromQuote's own work starts here: resolve templates, tenant
+  -- layer preferred over system (order by (t.layer='tenant') desc), same
+  -- RLS-scoped visibility rule every other resolution query in this
+  -- codebase already relies on rather than a redundant explicit filter.
+  v_slug := fn_slugify(v_quote.job_type);
+
+  select compliance_profile into v_compliance_profile from tenant where id = v_tenant_id;
+  v_compliance_profile := coalesce(v_compliance_profile, 'basic');
+
+  select tv.body into v_readiness_body
+  from template t join template_version tv on tv.template_id = t.id
+  where t.kind = 'checklist' and t.code = ('readiness_' || v_slug) and tv.status = 'active'
+  order by (t.layer = 'tenant') desc
+  limit 1;
+
+  select tv.body into v_execution_body
+  from template t join template_version tv on tv.template_id = t.id
+  where t.kind = 'execution_steps' and t.code = ('execution_' || v_slug) and tv.status = 'active'
+  order by (t.layer = 'tenant') desc
+  limit 1;
+
+  if v_compliance_profile <> 'basic' then
+    v_network_type := fn_infer_network_type(v_quote.job_type);
+    if v_network_type is not null then
+      select tv.body into v_test_protocol_body
+      from template t join template_version tv on tv.template_id = t.id
+      where t.kind = 'test_protocol' and tv.status = 'active' and tv.body->>'network_type' = v_network_type
+      order by (t.layer = 'tenant') desc, t.code
+      limit 1;
+    end if;
+  end if;
+
+  -- Materialize job_checklist_item rows from the resolved readiness
+  -- checklist, tracking covered catalog item_ids the same way the TS
+  -- version's coveredItemIds Set does, so the quote-line merge below
+  -- doesn't duplicate them.
+  for v_item in select * from jsonb_array_elements(coalesce(v_readiness_body->'items', '[]'::jsonb))
+  loop
+    v_item_id := nullif(v_item->>'item_id', '')::uuid;
+    v_qty := coalesce((v_item->>'qty')::numeric, 1);
+    v_mandatory := coalesce((v_item->>'mandatory')::boolean, true);
+
+    insert into job_checklist_item (tenant_id, job_id, cat, label, qty, item_id, scope, mandatory, status)
+    values (v_tenant_id, v_job_id, v_item->>'cat', v_item->>'label', v_qty, v_item_id, v_item->>'scope', v_mandatory, 'missing');
+
+    if v_item->>'scope' = 'job' then v_by_job := v_by_job + 1;
+    elsif v_item->>'scope' = 'van' then v_by_van := v_by_van + 1;
+    elsif v_item->>'scope' = 'office' then v_by_office := v_by_office + 1;
+    end if;
+
+    if v_item_id is not null then
+      v_covered_item_ids := array_append(v_covered_item_ids, v_item_id);
+    end if;
+  end loop;
+
+  -- Merge quote_line rows not already covered by the resolved checklist —
+  -- a line with no item_id always merges; a line with an item_id merges
+  -- only if that item_id wasn't already materialized above.
+  for v_line in select item_id, description, qty from quote_line where quote_id = p_quote_id
+  loop
+    if v_line.item_id is not null and v_line.item_id = any(v_covered_item_ids) then
+      continue;
+    end if;
+
+    insert into job_checklist_item (tenant_id, job_id, cat, label, qty, item_id, scope, mandatory, status)
+    values (v_tenant_id, v_job_id, 'material', v_line.description, v_line.qty, v_line.item_id, 'job', true, 'missing');
+
+    v_by_job := v_by_job + 1;
+    v_merged_from_quote := v_merged_from_quote + 1;
+    if v_line.item_id is not null then
+      v_covered_item_ids := array_append(v_covered_item_ids, v_line.item_id);
+    end if;
+  end loop;
+
+  -- Freeze the resolved bodies into the job row, verbatim, once
+  -- (architecture §5's "resolved once, never re-read" rule).
+  update job
+  set readiness_snapshot = v_readiness_body,
+      execution_snapshot = v_execution_body,
+      test_protocol_snapshot = v_test_protocol_body
+  where id = v_job_id;
+
+  return jsonb_build_object(
+    'kind', 'ok',
+    'job_id', v_job_id,
+    'code', v_code,
+    'checklist', jsonb_build_object(
+      'total', v_by_job + v_by_van + v_by_office,
+      'by_scope', jsonb_build_object('job', v_by_job, 'van', v_by_van, 'office', v_by_office),
+      'merged_from_quote', v_merged_from_quote
+    ),
+    'has_execution_snapshot', v_execution_body is not null,
+    'has_test_protocol_snapshot', v_test_protocol_body is not null
+  );
+end;
+$$;
+
+revoke execute on function rpc_create_job_from_quote(uuid) from public;
+grant execute on function rpc_create_job_from_quote(uuid) to authenticated;
+
+-- ============================================================================
+-- End of §6 Step 4 / §4's RPC-porting scope. All six candidates named in the
+-- design doc are now ported: the five sync mutations (checklist_item.update
+-- from Step 3; execution_step.complete, test_result.record,
+-- van_audit.record, closeout.submit from earlier in this slice),
+-- rpc_dispatch_job, and rpc_create_job_from_quote. Remaining work per §6:
+-- table-by-table cutover of the rest of the surface (step 4's broader scope)
+-- and final cutover (step 5) — not RPC authoring, wiring apps/web to call
+-- these instead of Fastify.
 -- ============================================================================

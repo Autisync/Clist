@@ -731,10 +731,72 @@ full content diff of all 117 seeded rows against a fresh regeneration from
 `date-holidays` (not just a row count) and confirmation that a duplicate
 national holiday is actually rejected by the unique index.
 
-Not started yet: `create_job_from_quote()` (its own slice, per above), and
-`§6` steps 4 (cutover of the remaining table-by-table surface once RPC
-porting is complete) and 5 (final cutover). `apps/api/src/db.ts`, every
-existing route, and `03-schema.sql` itself remain untouched by all of this
-work.
+### `rpc_create_job_from_quote()` — the last of the six named RPCs, exit criterion met
+
+Port of `job-creation.ts`'s `createJobFromQuote()` plus
+`routes/quotes.ts`'s `POST /quotes/:id/create-job` wrapper — quote
+validation, collision-safe `JOB-XXXX` code generation, template resolution
+across both coding conventions (`readiness_<slug>`/`execution_<slug>` by
+code, `test_protocol` by inferred network type), checklist materialization,
+and quote-line merge with covered-item dedup, all in one atomic function.
+Two new helpers: `fn_slugify` (ports `slugify()`'s diacritic-stripping) and
+`fn_infer_network_type` (the same keyword-priority heuristic as the TS
+version).
+
+**A security review of this slice found and independently verified 10
+real issues, the most important being a genuine correctness bug in
+`fn_slugify` itself.** Its first draft used Postgres's `unaccent`
+extension, verified against 5 real test strings and apparently correct —
+but the review found real Portuguese business text where it silently
+diverged: `unaccent()` *expands* certain characters into extra ASCII
+letters (º/ª, the ordinal indicators in "2º andar"/"nº 5", → `"o"`) where
+the real `slugify()` — NFD-normalize, then strip only the Unicode
+combining-marks block — leaves them untouched and they fall through to
+become a hyphen instead. Since the resolved slug feeds directly into the
+`readiness_<slug>`/`execution_<slug>` template lookup, this would have
+silently resolved a *different* (or missing) template for any job whose
+title contained a floor number or ordinal — exactly the kind of silent
+divergence this migration exists to avoid, in genuinely common PT business
+text, not an exotic edge case.
+
+Fixed properly, not patched around: `fn_slugify` now uses Postgres's
+native `normalize(text, NFD)` (built in since PG13, no extension needed)
+to replicate the *actual* JS algorithm literally instead of approximating
+it with a different one. Re-verified against 18 real strings this time —
+every divergence the review found (º/ª, ß, œ, æ, ł, dotless ı) plus
+digits-only, punctuation-only, empty-string, already-hyphenated, and
+non-Latin scripts — all byte-for-byte identical to the real `slugify()`
+output, and the `unaccent` extension dependency is gone entirely.
+
+Five more findings fixed, all real test-coverage gaps: the JOB-code
+20-attempt collision path had never been forced (fixed by pre-occupying
+the entire `JOB-1000`–`JOB-9999` space in one batched insert and confirming
+`code_collision` comes back correctly); the tenant-layer-preferred-over-
+system template resolution had never been given a real second candidate to
+choose between (fixed with a competing system-layer template sharing the
+same code); the `qty`/`mandatory` default-coalescing had zero coverage
+(fixed with a checklist item omitting both keys entirely); and the
+cross-tenant basic-profile test only checked the compliance gate, not
+whether tenant A's own templates could leak into tenant B's job (fixed
+with real assertions on `has_execution_snapshot` and tenant B's actual
+`job_checklist_item` rows — correctly distinguishing the shared
+system-layer template, which legitimately *should* resolve for tenant B,
+from tenant A's own tenant-layer one, which must never leak).
+
+`supabase/verify-create-job.mjs` — **19/19 checks passing**, confirmed
+twice for idempotency, zero stray rows (including the one fixture — a
+competing system-layer template — that isn't tenant-scoped and needed its
+own explicit cleanup):
+
+```bash
+npm run verify:create-job-supabase   # from the repo root
+```
+
+All six RPCs the design doc's §4 names are now built and proven: the five
+sync mutations and `rpc_dispatch_job` (both from earlier in Step 4) and
+`rpc_create_job_from_quote` (this slice). Remaining per `§6`: cutover of
+the rest of the surface table-by-table (step 4's broader scope, now that
+RPC authoring is complete) and final cutover (step 5) — wiring `apps/web`
+to call these instead of Fastify, not further RPC authoring.
 `apps/api/src/db.ts`, every existing route, and `03-schema.sql` itself
 remain untouched by all of this work.
