@@ -583,10 +583,65 @@ its own, RLS plus a valid session is the only way in.
 Supabase client factories for later slices — typechecked, not yet imported
 from any real page (deliberately: nothing in `apps/web`'s existing
 Fastify-backed login is touched by this work). Wiring an actual `/office/*`
-login page to these is the next slice, not yet started.
+login page to these is a later slice, not yet started.
 
-Not started yet: the RPC-function porting for the five sync mutation types
-plus `dispatch_job`/`create_job_from_quote` (`§4`), and the `pt_holiday`
-table replacing the `date-holidays` npm dependency. `apps/api/src/db.ts`,
-every existing route, and `03-schema.sql` itself are untouched by this
-work.
+### §6 Step 3 — one read path, one write path, exit criterion met
+
+Chosen pair, per the design doc's own example: **job list read** (RLS
+alone) + **`checklist_item.update` write** (RLS + an RPC function).
+
+`supabase/rpc.sql` — new, applied on top of `schema.sql`, not merged into
+it. One function so far, per Step 3's own scope: `rpc_checklist_item_update`,
+a literal port of `apps/api/src/routes/sync.ts`'s `applyMutation()` case for
+this mutation type — same `applied_mutation` lookup-then-apply-then-insert
+sequence, same result shape. Runs `SECURITY INVOKER` (the default, unlike
+`fn_current_tenant_id()`) — deliberately: the function exists only to
+preserve atomicity/idempotency across what would otherwise be several
+separate client calls, not to grant any privilege the caller didn't already
+have. RLS on `job_checklist_item`/`applied_mutation` is what actually
+restricts it, exactly as if the caller ran the statements directly.
+
+`supabase/verify-step3-read-write.mjs` — **12/12 checks passing**,
+confirmed twice for idempotency, against the real project over the real
+HTTP surface (real Supabase Auth sign-in, real PostgREST reads, real
+`supabase.rpc()` calls):
+
+```bash
+npm run verify:step3-supabase   # from the repo root
+```
+
+Covers: a technician's and an office user's real `job` list read each
+return exactly their own tenant's one job; the RPC's first call applies the
+update (independently confirmed against the raw table, not just trusted
+from the RPC's own response); replaying the identical
+`client_mutation_id` returns `already_applied` with no double-insert into
+`applied_mutation` — the client-observable half of the SIGKILL-mid-sync
+guarantee the four `proof:phaseN` scripts prove by actually killing a
+process; here there's no separate server process to kill (the "server" is
+Supabase's own managed Postgres), so this proof covers the half specific to
+this application's design — a client retrying after not getting a response
+gets the recorded result, not a double-effect — while crash-safety of the
+transaction itself is a platform guarantee inherited from Postgres, not
+re-derived; a cross-tenant write attempt is rejected as `item_not_found`
+(RLS makes "doesn't exist" and "isn't yours" indistinguishable, avoiding an
+existence leak) and independently confirmed to have had zero effect on the
+real row; an invalid status value and an unauthenticated caller are both
+rejected.
+
+Writing this proof script found and fixed a real bug in itself, worth
+naming since it's the same class of mistake the earlier security review
+caught in the schema: a first draft's cleanup helper swallowed every
+step's error with a blanket `.catch(() => {})` and never explicitly
+deleted `technician_device`/`app_user` test rows, silently leaving 4 stray
+tenant rows on the real project after two "all checks passed" runs —
+caught by checking the live project directly rather than trusting the
+script's own report, fixed by making every cleanup step log a failure
+instead of hiding it and deleting `technician_device` before the auth users
+it references (which has no cascade, by design).
+
+Not started yet (§6 step 4): the other four sync mutation types
+(`execution_step.complete`, `test_result.record`, `closeout.submit`,
+`van_audit.record`), `dispatch_job()`, `create_job_from_quote()`, and the
+`pt_holiday` table replacing the `date-holidays` npm dependency.
+`apps/api/src/db.ts`, every existing route, and `03-schema.sql` itself
+remain untouched by all of this work.
