@@ -224,6 +224,37 @@ comment on function fn_current_tenant_id() is
   'inherits the re-check on every request, per '
   '08-supabase-native-migration.md §2/§3.';
 
+-- fn_current_app_user_id() — §6 Step 4 addition. Several of Step 4's RPC
+-- functions (rpc_test_result_record, rpc_execution_step_complete,
+-- rpc_closeout_submit — rpc.sql) need to record WHO performed an action
+-- (performed_by/completed_by/closed_by, each an FK to app_user(id)), the
+-- same way their Fastify-era equivalents stamp req.auth!.user_id. That id
+-- is NOT auth.uid() for anyone under this schema — office rows have their
+-- own independent app_user.id with a separate auth_user_id column (§2), and
+-- technician rows resolve through technician_device entirely. Same two-
+-- branch shape and same liveness re-checks as fn_current_tenant_id(), just
+-- returning `id` instead of `tenant_id` — kept as a sibling function rather
+-- than folding a second return value into fn_current_tenant_id() itself, so
+-- policies that only ever need tenant_id (the vast majority, per §12) don't
+-- pay for or depend on the extra lookup.
+create or replace function fn_current_app_user_id()
+returns uuid
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(
+    (select id from app_user where auth_user_id = auth.uid() and active),
+    (select au.id
+       from technician_device td
+       join app_user au on au.id = td.user_id
+      where td.auth_user_id = auth.uid()
+        and td.revoked_at is null
+        and au.active)
+  );
+$$;
+
 -- ============================================================================
 -- 3. Template engine — unchanged from 03-schema.sql §4/§4a except RLS (§6 below)
 -- ============================================================================

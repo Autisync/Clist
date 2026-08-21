@@ -68,6 +68,7 @@ try {
       template_version, template, technician_device, app_user, tenant
       cascade;
     drop function if exists fn_current_tenant_id() cascade;
+    drop function if exists fn_current_app_user_id() cascade;
     drop function if exists fn_activate_template_version_guard() cascade;
     drop function if exists fn_ref_termo_reconciliation() cascade;
     drop function if exists fn_termo_ref_reconciliation() cascade;
@@ -142,6 +143,16 @@ try {
     ok('fn_current_tenant_id() resolves office identity through the FORCE-RLS carve-out');
   } else {
     fail('fn_current_tenant_id() precondition', new Error(`expected ${tenantA}, got ${resolved}`));
+  }
+
+  const resolvedAppUserId = await asUser(officeAAuthId, async () => {
+    const r = await db.query(`select fn_current_app_user_id() as uid`);
+    return r.rows[0].uid;
+  });
+  if (resolvedAppUserId === officeAId) {
+    ok('fn_current_app_user_id() resolves office identity to the right app_user.id (§6 Step 4 sibling of fn_current_tenant_id)');
+  } else {
+    fail('fn_current_app_user_id() precondition', new Error(`expected ${officeAId}, got ${resolvedAppUserId}`));
   }
 } catch (err) {
   fail('fn_current_tenant_id() precondition', err);
@@ -511,6 +522,16 @@ try {
     ok('RLS: technician identity resolves to the right tenant through technician_device');
   } else {
     fail('technician identity resolution', new Error(`expected ${tenantA}, got ${resolved}`));
+  }
+
+  const resolvedAppUserId = await asUser(techAAuthId, async () => {
+    const r = await db.query(`select fn_current_app_user_id() as uid`);
+    return r.rows[0].uid;
+  });
+  if (resolvedAppUserId === techUserId) {
+    ok("fn_current_app_user_id() resolves the technician's own app_user.id through technician_device (not the office user's)");
+  } else {
+    fail('fn_current_app_user_id() technician resolution', new Error(`expected ${techUserId}, got ${resolvedAppUserId}`));
   }
 
   const seenByTech = await asUser(techAAuthId, () => db.query(`select count(*)::int as n from client`));
