@@ -489,12 +489,52 @@ run against the real project instead of PGlite — same checks (tenant
 isolation, fail-safe with no identity, system-template cross-tenant
 visibility, the activation gate, REF/termo reconciliation, dashboard views,
 full RLS coverage), rewritten around `auth.uid()` instead of
-`current_setting`, plus two checks that have no equivalent under the
-current design at all: an anon/no-JWT request failing safe, and — the one
-§3 calls out as new and required, not optional — a **revoked device with a
-still-valid token** being denied by `fn_current_tenant_id()`'s explicit
-`revoked_at is null` re-check, not by sign-in-time enforcement a live token
-has already passed. 17/17 checks passing as of this writing.
+`current_setting`, plus the checks that have no equivalent under the
+current design at all — a **revoked device with a still-valid token**
+being denied by `fn_current_tenant_id()`'s explicit `revoked_at is null`
+re-check (§3 calls this out as new and required, not optional), and, after
+the adversarial review below, its sibling for office/owner users: a
+**deactivated office account with a still-valid token** denied by the same
+function's `active` re-check. 24/24 checks passing as of this writing.
+
+**An adversarial multi-agent security review of the first draft found two
+critical and three high-severity real holes**, each independently
+reproduced against a real Postgres RLS engine before being reported, not
+assumed from reading the SQL:
+
+- **Critical** — `template`/`template_version`'s original single USING/WITH
+  CHECK policy covering every command let any tenant session UPDATE-hijack
+  a *system-layer* template into their own tenant, DELETE any system
+  template outright, or INSERT a fabricated `template_version` onto a
+  seeded system protocol and self-satisfy the verified-by activation gate.
+  Fixed by splitting each table into per-command policies — SELECT keeps
+  the system-row exception, INSERT/UPDATE/DELETE never do, so a system
+  template is only ever writable by a role that bypasses RLS entirely.
+- **High** — `fn_current_tenant_id()`'s office branch never rechecked
+  `app_user.active`, unlike the technician branch's `revoked_at` recheck —
+  a deactivated office/owner account kept full tenant access until its
+  token happened to expire on its own. Fixed to match.
+- **High** — the five dashboard views had no `security_invoker = true`
+  (PG15+), so their real cross-tenant safety depended on an unstated,
+  unverified attribute of whichever role owned them. Fixed by adding it to
+  all five, making RLS-through-views unconditional rather than an
+  assumption.
+- **High** — nothing tied `technician_device.tenant_id` to the tenant of
+  the `app_user` row its `user_id` references, so a mismatched pairing
+  would have silently resolved a device's session to the wrong tenant.
+  Closed with a new `fn_technician_device_tenant_guard` trigger, same
+  "one place for a mistake to hide" reasoning as `fn_current_tenant_id`
+  itself.
+
+Six more medium/low findings (an asymmetric auth-user cleanup gap between
+this file and `verify-office-auth.mjs`, duplicated helper code between the
+two scripts, a dashboard check that asserted row-count but not the actual
+computed value, an RLS-coverage check that verified `relrowsecurity` but not
+`relforcerowsecurity`, dead variables) were also fixed — the shared logic
+between both verify scripts now lives in `supabase/verify-helpers.mjs`
+specifically so a safety fix in one place reaches both. Every fix above has
+its own new, passing check in the 24 — including exercising the exact
+exploit each finding described, not just re-testing the original happy path.
 
 ```bash
 npm run verify:schema-supabase   # from the repo root
@@ -515,8 +555,28 @@ at the start of each run so failed/interrupted runs don't accumulate
 cruft on the live project — verified empirically (see commit history), not
 assumed.
 
-Not started yet: office-auth wiring (`§6` step 2), the RPC-function porting
-for the five sync mutation types plus `dispatch_job`/`create_job_from_quote`
-(`§4`), and the `pt_holiday` table replacing the `date-holidays` npm
-dependency. `apps/api/src/db.ts`, every existing route, and `03-schema.sql`
-itself are untouched by this work.
+### §6 Step 2 — office auth, in progress
+
+`supabase/verify-office-auth.mjs` proves the real claim §6 step 2 makes: a
+real office user signs in via actual Supabase Auth (password, anon key —
+the exact mechanism a browser uses, not a simulated GUC), and a real
+PostgREST query through that session is RLS-scoped with zero Fastify route
+in the path. Also checks wrong-password rejection, the anon key itself
+being unable to touch the Auth Admin API, and unauthenticated requests
+failing safe. Written, syntax-checked, and reviewed, but **not yet run** —
+it needs the project's `anon` key (`SUPABASE_ANON_KEY` in `apps/api/.env`,
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` in `apps/web/.env.local`), a different key
+from the `service_role` one already in place, and deliberately not
+something to fake or substitute given what this step is specifically
+proving.
+
+`apps/web/src/lib/supabase/{env,client,server}.ts` are the browser/server
+Supabase client factories for later slices — typechecked, not yet imported
+from any real page (deliberately: nothing in `apps/web`'s existing
+Fastify-backed login is touched by this work).
+
+Not started yet: the RPC-function porting for the five sync mutation types
+plus `dispatch_job`/`create_job_from_quote` (`§4`), and the `pt_holiday`
+table replacing the `date-holidays` npm dependency. `apps/api/src/db.ts`,
+every existing route, and `03-schema.sql` itself are untouched by this
+work.

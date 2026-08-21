@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@fieldready/core": "0.1.0",
+    "@supabase/ssr": "^0.12.4",
+    "@supabase/supabase-js": "^2.112.3",
     "idb": "^8.0.0",
     "lucide-react": "^0.475.0",
     "next": "^15.1.0",

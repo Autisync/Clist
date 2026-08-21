@@ -147,6 +147,38 @@ comment on table technician_device is
   'specifically so that invariant cannot be silently defeated by deleting the '
   'underlying auth user out from under an audit row — revoke it instead.';
 
+-- Security review finding (auth-flow-correctness, confirmed): nothing
+-- otherwise ties technician_device.tenant_id to the tenant of the app_user
+-- row user_id points at, yet fn_current_tenant_id()'s technician branch
+-- resolves tenant through THAT app_user row (au.tenant_id), not through
+-- technician_device.tenant_id itself. A mismatched pairing (tenant_id set to
+-- tenant A, user_id pointing at a tenant-B app_user) would silently resolve
+-- the device's session to tenant B — while the device row itself becomes
+-- invisible under its own table's tenant_isolation policy (which filters on
+-- tenant A), making the misconfiguration undetectable from the table it's
+-- in. Closed with one guard, same "single place for a mistake to hide"
+-- reasoning as fn_current_tenant_id() itself, rather than trusting every
+-- future INSERT/UPDATE call site to get the join right by hand.
+create or replace function fn_technician_device_tenant_guard()
+returns trigger as $$
+declare
+  user_tenant_id uuid;
+begin
+  select tenant_id into user_tenant_id from app_user where id = new.user_id;
+  if user_tenant_id is null or user_tenant_id <> new.tenant_id then
+    raise exception
+      'technician_device %: tenant_id (%) does not match the tenant of the referenced app_user (%). '
+      'A device must be paired to a technician in its own tenant.',
+      new.id, new.tenant_id, user_tenant_id;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+create trigger trg_technician_device_tenant_guard
+  before insert or update on technician_device
+  for each row execute function fn_technician_device_tenant_guard();
+
 -- ============================================================================
 -- 2a. fn_current_tenant_id() — the one place identity resolution happens.
 -- 08-supabase-native-migration.md §3, verbatim.
@@ -171,20 +203,26 @@ security definer
 set search_path = public
 as $$
   select coalesce(
-    (select tenant_id from app_user where auth_user_id = auth.uid()),
+    (select tenant_id from app_user where auth_user_id = auth.uid() and active),
     (select au.tenant_id
        from technician_device td
        join app_user au on au.id = td.user_id
       where td.auth_user_id = auth.uid()
-        and td.revoked_at is null)
+        and td.revoked_at is null
+        and au.active)
   );
 $$;
 
 comment on function fn_current_tenant_id() is
-  'The revocation re-check (td.revoked_at is null) happens HERE, not just at '
-  'sign-in — a short-lived access token issued before revocation is still '
-  'technically unexpired, so every policy that calls this function inherits '
-  'the re-check on every request, per 08-supabase-native-migration.md §2/§3.';
+  'Both branches re-check liveness on every call, not just at sign-in: '
+  'td.revoked_at is null for a technician''s device, and `active` for both '
+  'branches'' underlying app_user row (a deactivated office/owner OR the '
+  'person record behind a technician device). A still-valid Supabase session '
+  'token issued before either flag flipped stays technically unexpired — '
+  'security review confirmed the office branch was missing its half of this '
+  'entirely in an earlier draft. Every policy that calls this function '
+  'inherits the re-check on every request, per '
+  '08-supabase-native-migration.md §2/§3.';
 
 -- ============================================================================
 -- 3. Template engine — unchanged from 03-schema.sql §4/§4a except RLS (§6 below)
@@ -679,22 +717,55 @@ alter table app_user no force row level security;
 alter table technician_device no force row level security;
 
 -- template: tenant rows are scoped normally; system rows (tenant_id null,
--- layer='system') must be readable by every tenant.
+-- layer='system') must be readable by every tenant, but — security review
+-- finding, critical, confirmed by reproducing the exploit against a real
+-- Postgres RLS engine — NEVER writable by one. A single USING/WITH CHECK
+-- policy covering every command was wrong here: Postgres defaults an
+-- omitted WITH CHECK to the USING expression, and even the explicit WITH
+-- CHECK this file had only constrained the *new* row's tenant_id, not
+-- whether the *old* row being touched was a system row — which let any
+-- tenant UPDATE a system template's layer/tenant_id to hijack it into their
+-- own tenant, and let DELETE (which only ever evaluates USING) remove any
+-- system template outright. Fixed by splitting into per-command policies:
+-- SELECT keeps the system-row exception (that's the one thing system rows
+-- are *for*); INSERT/UPDATE/DELETE do not — a system row can never be the
+-- target of a write from an authenticated-role session at all, regardless
+-- of whose tenant they claim to be writing into. Only a role that bypasses
+-- RLS entirely (service_role, or the schema-applying superuser) can ever
+-- write a system template — exactly the intended model (system templates
+-- are platform-managed, not tenant-managed).
 alter table template enable row level security;
 alter table template force row level security;
-create policy tenant_isolation on template
+
+create policy template_select on template for select
   using (
     tenant_id = fn_current_tenant_id()
     or (layer = 'system' and tenant_id is null)
-  )
+  );
+create policy template_insert on template for insert
   with check (tenant_id = fn_current_tenant_id());
+create policy template_update on template for update
+  using (tenant_id = fn_current_tenant_id())
+  with check (tenant_id = fn_current_tenant_id());
+create policy template_delete on template for delete
+  using (tenant_id = fn_current_tenant_id());
+
 grant select, insert, update, delete on template to authenticated;
 
 -- template_version: no tenant_id of its own, inherits visibility from its
--- parent template row via the same rule.
+-- parent template row via the same rule — and the same SELECT-only system
+-- exception applies: INSERT/UPDATE/DELETE require the referenced template
+-- to belong to the caller's own tenant, never a system template, for
+-- exactly the reasoning above. This also closes the specific activation-
+-- gate abuse the security review found: without this, any tenant could
+-- INSERT a new version row (or UPDATE an existing one) against a seeded
+-- system test_protocol template and self-satisfy the verified_by trigger
+-- guard by citing their own app_user.id — an attacker-controlled row
+-- masquerading as a verified Manual ITED limit, shared platform-wide.
 alter table template_version enable row level security;
 alter table template_version force row level security;
-create policy tenant_isolation on template_version
+
+create policy template_version_select on template_version for select
   using (
     exists (
       select 1 from template tp
@@ -705,6 +776,34 @@ create policy tenant_isolation on template_version
         )
     )
   );
+create policy template_version_insert on template_version for insert
+  with check (
+    exists (
+      select 1 from template tp
+      where tp.id = template_version.template_id and tp.tenant_id = fn_current_tenant_id()
+    )
+  );
+create policy template_version_update on template_version for update
+  using (
+    exists (
+      select 1 from template tp
+      where tp.id = template_version.template_id and tp.tenant_id = fn_current_tenant_id()
+    )
+  )
+  with check (
+    exists (
+      select 1 from template tp
+      where tp.id = template_version.template_id and tp.tenant_id = fn_current_tenant_id()
+    )
+  );
+create policy template_version_delete on template_version for delete
+  using (
+    exists (
+      select 1 from template tp
+      where tp.id = template_version.template_id and tp.tenant_id = fn_current_tenant_id()
+    )
+  );
+
 grant select, insert, update, delete on template_version to authenticated;
 
 -- tenant: RLS'd here (03-schema.sql's equivalent grant was deliberately not
@@ -719,14 +818,23 @@ grant select on tenant to authenticated;
 grant usage on schema public to authenticated;
 
 -- ============================================================================
--- 13. Convenience views — unchanged from 03-schema.sql §13/§13a. Views run
--- with the querying user's own permissions by default (no security_barrier
--- or security_invoker override here), so RLS on the underlying tables above
--- still applies per-row through them — a tenant A user querying
--- v_job_readiness only ever sees tenant A's join results.
+-- 13. Convenience views — logic unchanged from 03-schema.sql §13/§13a, but
+-- every view here is created `with (security_invoker = true)` (PG15+),
+-- which this file's first draft did NOT do — security review, confirmed
+-- critical/high: a plain view (the previous shape) authorizes its
+-- underlying-table access as the view's OWNER, not the querying session.
+-- Whether that accidentally still enforced tenant isolation depended
+-- entirely on whether the owning role (the schema-applying connection)
+-- carries SUPERUSER/BYPASSRLS — an unstated, unverified assumption a
+-- reviewer reproduced failing against a real Postgres instance. Not a
+-- decision this schema should leave implicit: security_invoker=true makes
+-- every one of these views evaluate permissions AND RLS as the actual
+-- calling session, unconditionally, so a tenant A user querying
+-- v_job_readiness only ever sees tenant A's join results regardless of who
+-- owns the view.
 -- ============================================================================
 
-create view v_job_readiness as
+create view v_job_readiness with (security_invoker = true) as
 select
   j.id as job_id,
   j.tenant_id,
@@ -741,7 +849,7 @@ from job j
 left join job_checklist_item c on c.job_id = j.id
 group by j.id, j.tenant_id;
 
-create view v_first_time_fix_rate as
+create view v_first_time_fix_rate with (security_invoker = true) as
 select
   tenant_id,
   date_trunc('month', closed_at) as month,
@@ -752,7 +860,7 @@ from job_closeout
 where closed_at is not null
 group by tenant_id, date_trunc('month', closed_at);
 
-create view v_hours_variance as
+create view v_hours_variance with (security_invoker = true) as
 select
   j.tenant_id,
   j.job_type,
@@ -763,13 +871,13 @@ from job j
 where j.actual_hours is not null
 group by j.tenant_id, j.job_type;
 
-create view v_price_alerts as
+create view v_price_alerts with (security_invoker = true) as
 select sp.tenant_id, sp.item_id, sp.supplier_id, sp.price, sp.prev_price,
        round(100.0 * (sp.price - sp.prev_price) / nullif(sp.prev_price, 0), 1) as delta_pct
 from supplier_price sp
 where sp.prev_price is not null and sp.price > sp.prev_price * 1.03;
 
-create view v_readiness_correlation as
+create view v_readiness_correlation with (security_invoker = true) as
 select
   jr.tenant_id,
   case when jr.readiness_pct = 100 then 'gated' else 'ungated' end as readiness_bucket,

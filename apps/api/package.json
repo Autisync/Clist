@@ -18,6 +18,7 @@
     "@fastify/cookie": "^11.1.2",
     "@fastify/multipart": "^9.4.0",
     "@fieldready/core": "0.1.0",
+    "@supabase/supabase-js": "^2.112.3",
     "@types/pg": "^8.23.1",
     "bcryptjs": "^3.0.3",
     "date-holidays": "^3.35.0",

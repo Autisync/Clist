@@ -1,10 +1,13 @@
 // FieldReady — Supabase-native schema verification harness.
 // 08-supabase-native-migration.md §6 Step 1. Same discipline as
-// ../../verify-schema.mjs, extended for the two checks that don't exist
-// there at all because the current design doesn't need them (§3):
-// unauthenticated-request fail-safe now means "no auth.uid()", and a
-// revoked-device-with-a-still-valid-token check that has no equivalent
-// under the current SET LOCAL app.current_tenant_id design.
+// ../../verify-schema.mjs, extended for the checks that don't exist there at
+// all because the current design doesn't need them (§3): unauthenticated-
+// request fail-safe now means "no auth.uid()", a revoked-device-with-a-
+// still-valid-token check, and (added after an adversarial security review
+// of this file's first draft found two critical RLS holes) explicit
+// cross-tenant write/delete rejection on system-layer template/
+// template_version rows, a deactivated-office-user recheck, and the
+// technician_device/app_user tenant-mismatch guard trigger.
 //
 // Runs against the REAL Supabase Postgres project (direct connection,
 // superuser role) — not PGlite. Resets and re-applies this folder's
@@ -17,6 +20,7 @@
 
 import { readFileSync } from 'node:fs';
 import { Client } from 'pg';
+import { createReporter, pgClientConfig, createAuthAdmin, createSessionSimulator } from './verify-helpers.mjs';
 
 const projectRef = process.env.SUPABASE_PROJECT_REF;
 const dbPassword = process.env.SUPABASE_DB_PASSWORD;
@@ -34,118 +38,15 @@ const authApiBase = `https://${projectRef}.supabase.co/auth/v1`;
 const schemaPath = new URL('./schema.sql', import.meta.url).pathname;
 const schemaSql = readFileSync(schemaPath, 'utf8');
 
-let failures = 0;
-function ok(label) { console.log(`  OK   ${label}`); }
-function fail(label, err) { failures++; console.log(`  FAIL ${label} -> ${err.message ?? err}`); }
-
-const db = new Client({
-  host: `db.${projectRef}.supabase.co`,
-  port: 5432,
-  user: 'postgres',
-  password: dbPassword,
-  database: 'postgres',
-  ssl: { rejectUnauthorized: false },
-});
-
-// ---- auth admin helpers (real Supabase Auth users, cleaned up at the end) -
+const reporter = createReporter();
+const { ok, fail } = reporter;
+const db = new Client(pgClientConfig(projectRef, dbPassword));
 
 const createdAuthUserIds = [];
-
-async function createAuthUser(email, password) {
-  const res = await fetch(`${authApiBase}/admin/users`, {
-    method: 'POST',
-    headers: {
-      apikey: serviceRoleKey,
-      Authorization: `Bearer ${serviceRoleKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ email, password, email_confirm: true }),
-  });
-  const body = await res.json();
-  if (!res.ok) throw new Error(`createAuthUser(${email}) failed: ${res.status} ${JSON.stringify(body)}`);
-  createdAuthUserIds.push(body.id);
-  return body.id;
-}
-
-async function deleteAuthUser(id) {
-  const res = await fetch(`${authApiBase}/admin/users/${id}`, {
-    method: 'DELETE',
-    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
-  });
-  return res.ok;
-}
-
-// Sweep every auth.users row this harness could have created, by the fixed
-// email suffix all of them share — not just this run's own createdAuthUserIds
-// — so stragglers from an interrupted/failed prior run don't accumulate on
-// the real project forever. MUST run after the SQL reset below drops
-// technician_device (which FKs auth_user_id with no ON DELETE action, by
-// design — see schema.sql's comment on that table) or every delete 500s on
-// "still referenced from table technician_device", exactly as it did the
-// first time this script's cleanup ran.
-async function sweepTestAuthUsers() {
-  const res = await fetch(`${authApiBase}/admin/users?per_page=1000`, {
-    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
-  });
-  const body = await res.json();
-  const testUsers = (body.users ?? []).filter((u) => u.email?.endsWith('@device.fieldready.internal'));
-  let deleted = 0;
-  for (const u of testUsers) {
-    if (await deleteAuthUser(u.id)) deleted++;
-  }
-  return { found: testUsers.length, deleted };
-}
-
-// ---- simulate PostgREST's request context inside a real transaction ------
-// This is Supabase's own documented pattern for exercising RLS from a direct
-// SQL connection: `set local role`, then the JWT claims PostgREST would have
-// set, as local (transaction-scoped) GUCs. auth.uid() reads either
-// request.jwt.claim.sub or request.jwt.claims->>'sub' depending on Supabase
-// project version — both are set below so this doesn't depend on which.
-
-async function asUser(authUserId, fn) {
-  await db.query('begin');
-  try {
-    await db.query(`set local role authenticated`);
-    await db.query(`select set_config('request.jwt.claims', $1, true)`, [
-      JSON.stringify({ sub: authUserId, role: 'authenticated' }),
-    ]);
-    await db.query(`select set_config('request.jwt.claim.sub', $1, true)`, [authUserId]);
-    const result = await fn();
-    await db.query('commit');
-    return result;
-  } catch (err) {
-    await db.query('rollback').catch(() => {});
-    throw err;
-  }
-}
-
-async function asAnon(fn) {
-  await db.query('begin');
-  try {
-    await db.query(`set local role anon`);
-    await db.query(`select set_config('request.jwt.claims', '', true)`);
-    await db.query(`select set_config('request.jwt.claim.sub', '', true)`);
-    const result = await fn();
-    await db.query('commit');
-    return result;
-  } catch (err) {
-    await db.query('rollback').catch(() => {});
-    throw err;
-  }
-}
-
-async function asSuperuser(fn) {
-  await db.query('begin');
-  try {
-    const result = await fn();
-    await db.query('commit');
-    return result;
-  } catch (err) {
-    await db.query('rollback').catch(() => {});
-    throw err;
-  }
-}
+const { createAuthUser, deleteAuthUser, sweepTestAuthUsers } = createAuthAdmin({
+  authApiBase, serviceRoleKey, createdAuthUserIds,
+});
+const { asUser, asAnon, asSuperuser } = createSessionSimulator(db);
 
 // ---- run ------------------------------------------------------------------
 
@@ -170,6 +71,7 @@ try {
     drop function if exists fn_activate_template_version_guard() cascade;
     drop function if exists fn_ref_termo_reconciliation() cascade;
     drop function if exists fn_termo_ref_reconciliation() cascade;
+    drop function if exists fn_technician_device_tenant_guard() cascade;
   `);
   ok('prior run\'s objects reset');
 } catch (err) {
@@ -199,13 +101,13 @@ try {
 }
 
 // ---- 0. Precondition: fn_current_tenant_id can actually read app_user /
-// technician_device despite FORCE ROW LEVEL SECURITY on 20 sibling tables --
+// technician_device despite FORCE ROW LEVEL SECURITY on 23 sibling tables --
 // (the "no force row level security" carve-out this file's schema.sql adds
 // for exactly these two tables). If this fails, every other RLS check below
 // is meaningless — a chicken-and-egg identity failure, not a real isolation
 // bug — so it's checked first and explicitly, not inferred from the rest.
 
-let tenantA, tenantB, officeAId, techAId, revokedTechAId;
+let tenantA, tenantB, officeAId;
 let officeAAuthId, techAAuthId, revokedTechAAuthId, officeBAuthId;
 
 try {
@@ -278,19 +180,13 @@ try {
 }
 
 // ---- 2. No auth.uid() at all (anon/unauthenticated) fails safe: zero rows,
-// not an error, not all rows. This is the Supabase-native equivalent of
-// verify-schema.mjs's "no app.current_tenant_id set" check — same intent
-// (fn_current_tenant_id() returns null, every policy evaluates to false),
-// different mechanism entirely, so it's rewritten, not carried over. -------
+// not an error, not all rows. -----------------------------------------------
 
 try {
   const r = await asAnon(() => db.query(`select count(*)::int as n from client`));
   if (r.rows[0].n === 0) ok('RLS: no auth.uid() (anon request) => zero rows (fail-safe)');
   else fail('RLS fail-safe (anon)', new Error(`expected 0 rows unauthenticated, got ${r.rows[0].n}`));
 } catch (err) {
-  // A permission error (rather than zero rows) is also an acceptable
-  // fail-safe outcome — it still leaks nothing — but zero rows is preferred
-  // since that's what the RLS policies are designed to produce.
   if (/permission denied/i.test(err.message)) {
     ok('RLS: no auth.uid() (anon request) => permission denied (fail-safe, no leak)');
   } else {
@@ -300,12 +196,14 @@ try {
 
 // ---- 3. System templates are visible to every tenant -----------------------
 
+let systemTemplateId;
 try {
-  await asSuperuser(async () => {
-    await db.query(
-      `insert into template (tenant_id, layer, kind, code, title) values (null, 'system', 'checklist', 'readiness_tdt_install', 'Readiness — TDT instalação nova')`
-    );
-  });
+  const tpl = await asSuperuser(() =>
+    db.query(
+      `insert into template (tenant_id, layer, kind, code, title) values (null, 'system', 'checklist', 'readiness_tdt_install', 'Readiness — TDT instalação nova') returning id`
+    )
+  );
+  systemTemplateId = tpl.rows[0].id;
   const r = await asUser(officeBAuthId, () =>
     db.query(`select count(*)::int as n from template where layer = 'system'`)
   );
@@ -313,6 +211,72 @@ try {
   else fail('system template visibility', new Error(`expected 1, got ${r.rows[0].n}`));
 } catch (err) {
   fail('system template visibility', err);
+}
+
+// ---- 3b. Security review (critical, confirmed): no tenant session can
+// write to or delete a system-layer template/template_version row, ever —
+// only SELECT gets the system-row exception. Exercises the exact exploit
+// three independent verifiers reproduced against the schema's first draft.
+
+if (systemTemplateId) {
+  try {
+    const hijack = await asUser(officeBAuthId, () =>
+      db.query(
+        `update template set layer = 'tenant', tenant_id = $1 where id = $2`,
+        [tenantB, systemTemplateId]
+      )
+    );
+    if (hijack.rowCount === 0) {
+      ok('RLS: a tenant session cannot UPDATE-hijack a system template (0 rows affected)');
+    } else {
+      fail('system template UPDATE hijack', new Error(`expected 0 rows affected, got ${hijack.rowCount}`));
+    }
+  } catch (err) {
+    // An RLS/permission-denial error is also an acceptable outcome here —
+    // either way nothing was hijacked — but any other error is a real bug
+    // this check should surface, not silently treat as a pass.
+    if (/row-level security|permission denied/i.test(err.message)) {
+      ok('RLS: a tenant session cannot UPDATE-hijack a system template (rejected)');
+    } else {
+      fail('system template UPDATE hijack', err);
+    }
+  }
+
+  try {
+    const del = await asUser(officeBAuthId, () =>
+      db.query(`delete from template where id = $1`, [systemTemplateId])
+    );
+    if (del.rowCount === 0) {
+      ok('RLS: a tenant session cannot DELETE a system template (0 rows affected)');
+    } else {
+      fail('system template DELETE', new Error(`expected 0 rows affected, got ${del.rowCount}`));
+    }
+  } catch (err) {
+    if (/row-level security|permission denied/i.test(err.message)) {
+      ok('RLS: a tenant session cannot DELETE a system template (rejected)');
+    } else {
+      fail('system template DELETE', err);
+    }
+  }
+
+  let insertBlocked = false;
+  try {
+    await asUser(officeBAuthId, () =>
+      db.query(
+        `insert into template_version (template_id, version, status, body) values ($1, 99, 'draft', '{}')`,
+        [systemTemplateId]
+      )
+    );
+  } catch (err) {
+    insertBlocked = /row-level security|permission denied/i.test(err.message);
+  }
+  if (insertBlocked) {
+    ok('RLS: a tenant session cannot INSERT a template_version onto a system template');
+  } else {
+    fail('system template_version INSERT', new Error('insert was not blocked'));
+  }
+} else {
+  fail('system template write/delete rejection', new Error('systemTemplateId unavailable — check 3 must have failed'));
 }
 
 // ---- 4. Unverified test_protocol cannot be activated (unchanged trigger) --
@@ -436,10 +400,37 @@ try {
   if (Number(readiness.rows[0].readiness_pct) === 50.0) ok('view v_job_readiness computes 50.0% (read through RLS)');
   else fail('v_job_readiness', new Error(`got ${JSON.stringify(readiness.rows)}`));
 
-  if (ffr.rows.length === 1) ok('view v_first_time_fix_rate returns a row (read through RLS)');
-  else fail('v_first_time_fix_rate', new Error('no row returned'));
+  // Security review (medium, confirmed): this used to only assert
+  // ffr.rows.length === 1, never the actual computed value — a real
+  // regression in the view's arithmetic would have passed silently. The
+  // fixture is exactly one closed job with first_time_fix = false, so the
+  // correct answer is 0.0, not just "some row came back".
+  if (ffr.rows.length === 1 && Number(ffr.rows[0].ffr_pct) === 0.0) {
+    ok('view v_first_time_fix_rate computes 0.0% (read through RLS, value asserted not just row count)');
+  } else {
+    fail('v_first_time_fix_rate', new Error(`got ${JSON.stringify(ffr.rows)}`));
+  }
 } catch (err) {
   fail('dashboard views', err);
+}
+
+// ---- 6b. Security review (high, confirmed): dashboard views must not leak
+// cross-tenant even if the owning role's RLS-bypass attributes ever change —
+// security_invoker=true is what makes this unconditional rather than an
+// assumption about who owns the view. Not exercised by check 6 above, which
+// only confirms tenant A's own numbers are correct.
+
+try {
+  const r = await asUser(officeBAuthId, () =>
+    db.query(`select count(*)::int as n from v_job_readiness`)
+  );
+  if (r.rows[0].n === 0) {
+    ok('RLS: v_job_readiness leaks nothing to a different tenant (security_invoker holds)');
+  } else {
+    fail('view cross-tenant leak', new Error(`expected 0 rows for tenant B, got ${r.rows[0].n}`));
+  }
+} catch (err) {
+  fail('view cross-tenant leak', err);
 }
 
 // ---- 7. tenant table itself is RLS'd (the deliberate hardening this file's
@@ -453,11 +444,49 @@ try {
   fail('tenant table RLS', err);
 }
 
+// ---- 7b. Security review (high, confirmed): a deactivated office/owner
+// account must lose RLS-level access immediately, not just at next sign-in —
+// fn_current_tenant_id()'s office branch now rechecks `active`, mirroring
+// the technician branch's revoked_at recheck. officeA is reactivated at the
+// end of this block since checks 8+ don't touch it again but good hygiene
+// says leave fixtures in the state later checks expect.
+
+try {
+  await asSuperuser(() =>
+    db.query(`update app_user set active = false where auth_user_id = $1`, [officeAAuthId])
+  );
+
+  const resolved = await asUser(officeAAuthId, async () => {
+    const r = await db.query(`select fn_current_tenant_id() as tid`);
+    return r.rows[0].tid;
+  });
+
+  if (resolved === null) {
+    ok('fn_current_tenant_id() returns null for a deactivated office user even with a valid token');
+  } else {
+    fail('deactivated office user identity resolution', new Error(`expected null, got ${resolved}`));
+  }
+
+  const seenByDeactivated = await asUser(officeAAuthId, () => db.query(`select count(*)::int as n from client`));
+  if (seenByDeactivated.rows[0].n === 0) {
+    ok('RLS: a deactivated office user with a still-valid token sees zero rows');
+  } else {
+    fail('deactivated office user RLS', new Error(`expected 0 rows, got ${seenByDeactivated.rows[0].n}`));
+  }
+
+  await asSuperuser(() =>
+    db.query(`update app_user set active = true where auth_user_id = $1`, [officeAAuthId])
+  );
+} catch (err) {
+  fail('deactivated office user identity resolution', err);
+}
+
 // ---- 8. Technician identity resolves through technician_device, not app_user
 // directly (§2/§3's whole reason for existing) ------------------------------
 
+let techUserId;
 try {
-  const techUserId = crypto.randomUUID();
+  techUserId = crypto.randomUUID();
   await asSuperuser(() =>
     db.query(
       `insert into app_user (id, tenant_id, role, full_name) values ($1, $2, 'technician', 'Rui (técnico)')`,
@@ -494,6 +523,41 @@ try {
   }
 } catch (err) {
   fail('technician identity resolution', err);
+}
+
+// ---- 8b. Security review (high, confirmed): technician_device.tenant_id
+// pointed at a DIFFERENT tenant than the app_user it pairs (user_id) must be
+// rejected outright by the new fn_technician_device_tenant_guard trigger —
+// not merely resolve to a confusing/wrong tenant silently.
+
+if (techUserId) {
+  let mismatchBlocked = false;
+  try {
+    await asSuperuser(() =>
+      db.query(
+        `insert into technician_device (tenant_id, user_id, device_label, auth_user_id, paired_by)
+         values ($1, $2, 'Cross-tenant pairing attempt', $3, $4)`,
+        [tenantB, techUserId, crypto.randomUUID(), officeAId]
+      )
+    );
+  } catch (err) {
+    // auth_user_id above is a random uuid, not a real auth.users row, so
+    // this could also fail on the auth.users FK — accept either the
+    // guard trigger's own message or a foreign-key violation as "blocked",
+    // but log which one fired so a silently-wrong reason doesn't pass by
+    // accident.
+    mismatchBlocked = /does not match the tenant|violates foreign key/i.test(err.message);
+    if (!/does not match the tenant/i.test(err.message)) {
+      console.log(`  (blocked via: ${err.message.split('\n')[0]})`);
+    }
+  }
+  if (mismatchBlocked) {
+    ok('trigger: technician_device tenant_id mismatched against its app_user is rejected');
+  } else {
+    fail('technician_device tenant mismatch guard', new Error('mismatched pairing was not blocked'));
+  }
+} else {
+  fail('technician_device tenant mismatch guard', new Error('techUserId unavailable — check 8 must have failed'));
 }
 
 // ---- 9. Revoked device with a still-valid token is denied — the check that
@@ -547,8 +611,12 @@ try {
   fail('revoked-device identity resolution', err);
 }
 
-// ---- 10. Every non-tenant table has RLS enabled, same coverage check as
-// verify-schema.mjs §7, rewritten for pg_roles/pg_class over a real connection
+// ---- 10. Every non-tenant table has RLS enabled; every table expected to
+// carry FORCE ROW LEVEL SECURITY (everything except app_user and
+// technician_device, by design) actually still has it. Security review
+// (low, confirmed): the original check only queried relrowsecurity, never
+// relforcerowsecurity, so a future accidental `no force row level security`
+// on the wrong table would have passed silently.
 
 try {
   const r = await db.query(`
@@ -567,6 +635,24 @@ try {
   fail('RLS coverage', err);
 }
 
+try {
+  const r = await db.query(`
+    select c.relname
+    from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relkind = 'r'
+      and c.relname not in ('app_user', 'technician_device')
+      and c.relforcerowsecurity = false;
+  `);
+  if (r.rows.length === 0) {
+    ok('every table except the deliberate app_user/technician_device carve-out has FORCE row-level security');
+  } else {
+    fail('FORCE RLS coverage', new Error(`tables missing FORCE RLS: ${r.rows.map(x => x.relname).join(', ')}`));
+  }
+} catch (err) {
+  fail('FORCE RLS coverage', err);
+}
+
 // ---- cleanup: best-effort only — technician_device rows (which FK
 // auth_user_id with no ON DELETE action, by design) are still live at this
 // point, so revoked/paired test devices will 500 here exactly like the
@@ -583,7 +669,7 @@ console.log(`  ${cleanedNow}/${createdAuthUserIds.length} deleted now; any rest 
 
 await db.end();
 
-console.log('\n' + (failures === 0
+console.log('\n' + (reporter.failures === 0
   ? `All checks passed.`
-  : `${failures} check(s) failed — see FAIL lines above.`));
-process.exit(failures === 0 ? 0 : 1);
+  : `${reporter.failures} check(s) failed — see FAIL lines above.`));
+process.exit(reporter.failures === 0 ? 0 : 1);
