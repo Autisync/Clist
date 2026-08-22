@@ -1,0 +1,19 @@
+# Keeps the apps/api image build context small and never bakes real
+# secrets into an image layer (env vars come from the host platform's own
+# config at runtime, not a committed/copied .env file).
+node_modules
+**/node_modules
+.git
+.next
+**/.next
+dist
+**/dist
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+.data
+.claude
+*.log

@@ -26,20 +26,32 @@ function requireConnectionEnv() {
   return { SUPABASE_PROJECT_REF, SUPABASE_DB_PASSWORD };
 }
 
+// Same hosting-portability fix as src/db.ts's own SUPABASE_DB_POOLER_HOST
+// (see that file's comment for the full "direct connection is IPv6-only,
+// confirmed empirically" reasoning) — a CI runner without real IPv6 egress
+// would otherwise fail every one of these proof scripts at the very first
+// schema-reset step, not just at server boot.
+function connectionParams(searchPath) {
+  const { SUPABASE_PROJECT_REF, SUPABASE_DB_PASSWORD } = requireConnectionEnv();
+  const poolerHost = process.env.SUPABASE_DB_POOLER_HOST;
+  const base = {
+    password: SUPABASE_DB_PASSWORD,
+    database: "postgres",
+    ssl: { rejectUnauthorized: false },
+  };
+  const host = poolerHost ?? `db.${SUPABASE_PROJECT_REF}.supabase.co`;
+  const user = poolerHost ? `postgres.${SUPABASE_PROJECT_REF}` : "postgres";
+  return searchPath
+    ? { ...base, host, port: 5432, user, options: `-c search_path=${searchPath}` }
+    : { ...base, host, port: 5432, user };
+}
+
 /** Drops `schemaName` (cascade) so the next server boot re-applies
  * schema+seed+fixtures from scratch — the same "totally clean slate" a
  * `rmSync(RUNTIME_DIR)` used to give against an on-disk PGlite file. Safe
  * even the first time a schema never existed (`if exists`). */
 export async function resetFastifySchema(schemaName) {
-  const { SUPABASE_PROJECT_REF, SUPABASE_DB_PASSWORD } = requireConnectionEnv();
-  const client = new pg.Client({
-    host: `db.${SUPABASE_PROJECT_REF}.supabase.co`,
-    port: 5432,
-    user: "postgres",
-    password: SUPABASE_DB_PASSWORD,
-    database: "postgres",
-    ssl: { rejectUnauthorized: false },
-  });
+  const client = new pg.Client(connectionParams());
   await client.connect();
   try {
     await client.query(`drop schema if exists "${schemaName}" cascade;`);
@@ -56,16 +68,7 @@ export async function resetFastifySchema(schemaName) {
  * server (never two things touching the same row concurrently, same
  * discipline the old PGlite version enforced by file-level exclusivity). */
 export async function openDirectConnection(schemaName) {
-  const { SUPABASE_PROJECT_REF, SUPABASE_DB_PASSWORD } = requireConnectionEnv();
-  const client = new pg.Client({
-    host: `db.${SUPABASE_PROJECT_REF}.supabase.co`,
-    port: 5432,
-    user: "postgres",
-    password: SUPABASE_DB_PASSWORD,
-    database: "postgres",
-    ssl: { rejectUnauthorized: false },
-    options: `-c search_path=${schemaName}`,
-  });
+  const client = new pg.Client(connectionParams(schemaName));
   await client.connect();
   return client;
 }

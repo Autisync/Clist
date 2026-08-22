@@ -1061,3 +1061,49 @@ is still no UI control anywhere in `apps/web` for actually reviewing
 the dispatch-gate blocking reason renders as text on this page, same as
 before, but nothing lets an office user act on it from here. Worth a future
 slice; out of scope for this one.
+
+## Hosting `apps/api` for real
+
+Full rundown in **[`HOSTING.md`](HOSTING.md)** (recommendation, required
+env vars, a ready-to-use Render Blueprint at the repo root's
+[`render.yaml`](../render.yaml), and `Dockerfile`) — everything in it was
+actually built and run, not assumed: a real `docker build`, run locally,
+walked through a complete real HTTP flow from *outside* the container
+(office login → jobs list → REF document creation → Playwright PDF
+generation, confirmed on disk as a real 31KB `%PDF-1.4` file) against the
+real Supabase project. Doing that surfaced and fixed two real problems,
+both load-bearing for hosting anywhere, not just Render:
+
+- **The direct Supabase connection is IPv6-only.** Confirmed by the exact
+  failure a container without real IPv6 egress hits (`ENOTFOUND`/"Network
+  is unreachable") — this repo's own dev sandbox happens to have real IPv6
+  route-ability, which is why every proof script and this whole session's
+  earlier real-Postgres-swap work never hit it. `src/db.ts` now supports
+  an optional `SUPABASE_DB_POOLER_HOST` — set, it connects through
+  Supabase's own IPv4-reachable Supavisor pooler instead of the direct
+  host, Supabase's own documented fix for this. Confirmed empirically to
+  behave identically to the direct connection for everything this
+  codebase depends on (`search_path`, `SET LOCAL role` actually taking
+  effect and reverting after commit) — the exact `postgres.<project-ref>`
+  pooler username and session-mode port 5432 (not the 6543 transaction-
+  pooling port) were both confirmed necessary by testing, not assumed from
+  documentation alone. The same fix was applied to `test/db-reset.mjs` and
+  `supabase/verify-helpers.mjs`'s shared `pgClientConfig` (every proof
+  script and Supabase verify script picks it up automatically), so the
+  whole test suite is portable to an IPv4-only CI runner too, not just the
+  production server. Re-ran `proof:phase1-4`, `smoke:web`, and the
+  Supabase verify suite with it set — identical pass counts to the direct
+  connection.
+- **The server bound to `127.0.0.1` by default.** Correct for local dev
+  and every proof/smoke script (all same-machine callers), but unreachable
+  through a container's published port — confirmed by literally hitting
+  this: the containerized server passed its own internal `/health` check
+  while being completely unreachable from the host machine. `src/index.ts`
+  now reads an optional `HOST` env var (default unchanged); the
+  `Dockerfile` sets `HOST=0.0.0.0`.
+
+`HOSTING.md` also documents the object store's known limitation (local
+disk, a persistent-volume workaround for a single instance today, a real
+S3/R2 swap still future work — `src/object-store.ts`'s own comment already
+said so) honestly rather than glossing over it in the rush to get
+something hosted.

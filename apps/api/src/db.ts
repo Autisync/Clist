@@ -57,6 +57,47 @@ function getConnectionConfig(): pg.PoolConfig {
         "real Postgres server (see apps/api/README.md's real-Postgres-swap section), not PGlite."
     );
   }
+
+  // Hosting-portability fix, confirmed empirically (not assumed): the
+  // direct connection host (db.<ref>.supabase.co) resolves to an
+  // IPv6-only address — Supabase's own docs say so outright, and it's
+  // easy to reproduce locally (any environment without real IPv6 egress
+  // gets ENOTFOUND/"Network is unreachable", exactly what a real Docker
+  // build of this same image hit). Real hosting platforms' outbound IPv6
+  // support varies (confirmed: Render has none as of this writing; even
+  // Fly.io, which generally has IPv6 egress, has had real regional IPv6
+  // outages reported against Supabase specifically) — so rather than bet
+  // on any given host's IPv6 posture, SUPABASE_DB_POOLER_HOST switches
+  // this connection to Supabase's own Supavisor pooler instead, which is
+  // IPv4-reachable and is Supabase's own documented recommendation for
+  // exactly this situation. Confirmed empirically to behave identically
+  // to the direct connection for everything this file depends on: the
+  // `-c search_path=...` startup option, and SET LOCAL role actually
+  // switching current_user for the duration of a transaction and
+  // reverting after commit. Optional and additive — unset, this falls
+  // back to the direct connection exactly as before (correct for local
+  // dev environments that do have real IPv6 route-ability, confirmed:
+  // this repo's own dev sandbox is one).
+  const poolerHost = process.env.SUPABASE_DB_POOLER_HOST;
+  if (poolerHost) {
+    return {
+      host: poolerHost,
+      port: 5432, // session mode, not the 6543 transaction-pooling port —
+      // needed for SET LOCAL role/app.current_tenant_id to actually take
+      // effect for the rest of withTenant()'s transaction the way a plain
+      // session connection guarantees; confirmed working via session mode,
+      // not re-verified against transaction mode.
+      user: `postgres.${projectRef}`, // Supavisor's own user-encodes-the-
+      // project convention, not a typo of the direct connection's plain
+      // "postgres" — confirmed empirically (the plain form gets rejected
+      // with "tenant/user ... not found" against the pooler).
+      password: dbPassword,
+      database: "postgres",
+      ssl: { rejectUnauthorized: false },
+      options: `-c search_path=${FASTIFY_SCHEMA}`,
+    };
+  }
+
   return {
     host: `db.${projectRef}.supabase.co`,
     port: 5432,

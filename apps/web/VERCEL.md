@@ -32,11 +32,12 @@ repo's existing credential-hygiene convention):
 
 ## The one remaining gap: `apps/api` needs its own real host
 
-Every page not yet cut over to Supabase — job detail (dispatch, checklist,
-execution steps, test results, close-out), clients, quotes, suppliers,
+Every page not yet cut over to Supabase — clients, quotes, suppliers,
 technicians, the dashboard, and all of `/field/*` — still calls Fastify via
 the `/api/*` rewrite (`next.config.ts`), which needs `FIELDREADY_API_ORIGIN`
-to point at something real and reachable.
+to point at something real and reachable. (Job detail — dispatch,
+checklist, execution steps, test results, close-out — is cut over to
+Supabase too now; see `README.md`'s §6 Step 5 section.)
 
 **Resolved:** `apps/api`'s database is no longer PGlite. It now connects to
 the same real Supabase Postgres project already proven throughout `§6`, as
@@ -48,19 +49,22 @@ never collide with the real, RLS-governed data in `public`. See
 rundown. One Postgres project now serves both halves of the architecture
 during the transition — no separate database to provision.
 
-**Still open:** `apps/api` needs to actually run somewhere with a public
-URL. Vercel's own serverless functions are not a good fit for it as-is —
-Fastify is written as a long-running server, and Playwright (REF PDF
-generation, `apps/api/src/routes/ref.ts`) needs a real headless-Chromium
-process, which doesn't fit a stateless serverless model. A Node-friendly
-host that runs a persistent process (Railway, Render, Fly.io, etc.) is the
-natural fit for `apps/api` as it exists today — set that host's environment
-variables from `apps/api/.env.example` (the same `SUPABASE_PROJECT_REF`/
-`SUPABASE_DB_PASSWORD`/`SUPABASE_SERVICE_ROLE_KEY` already in use, plus
-`VERYFI_*` if a real OCR vendor is ever wired in), then point `apps/web`'s
-`FIELDREADY_API_ORIGIN` at its public URL.
+**Resolved: where to actually run it.** `apps/api/HOSTING.md` has the full
+rundown — a real `docker build` of `apps/api/Dockerfile`, run locally and
+walked through a complete real HTTP flow (login → jobs list → REF creation
+→ Playwright PDF generation, confirmed on disk) end to end, which surfaced
+and fixed two real problems along the way: Supabase's direct connection
+host is IPv6-only (fixed with an optional pooler connection,
+`SUPABASE_DB_POOLER_HOST`), and the server bound to `127.0.0.1` by default
+(unreachable through a container's published port, fixed with a `HOST`
+env var). `render.yaml` at the repo root is a ready-to-use Render
+Blueprint — Docker web service, a persistent disk for the object store
+(itself a known, honestly-documented limitation — see `HOSTING.md`'s §3),
+and every required env var. Once deployed, point `apps/web`'s
+`FIELDREADY_API_ORIGIN` at the assigned URL.
 
-Until that host exists, `apps/web` can deploy to Vercel and its
+Until that host is actually stood up (the Blueprint is ready; the account/
+deploy step itself needs a human), `apps/web` can deploy to Vercel and its
 *already-cut-over* pages will work correctly against real, hosted Supabase
 infrastructure — but the pages still depending on Fastify will fail exactly
 the way they do in local dev today when `apps/api` isn't running (a clear

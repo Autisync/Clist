@@ -1,0 +1,65 @@
+# Render Blueprint for apps/api — see apps/api/HOSTING.md for the full
+# rundown of why this shape (Docker, a persistent disk, the two Postgres-
+# connection env vars) and what was actually proven, not assumed, before
+# writing this file: a real build of apps/api/Dockerfile, run locally,
+# confirmed reachable from outside the container, walked through a real
+# login -> jobs list -> REF creation -> Playwright PDF generation HTTP
+# flow end to end.
+#
+# To use: Render dashboard -> New -> Blueprint -> point at this repo. Render
+# reads this file and proposes the service below; fill in the env vars
+# marked sync: false yourself (Render prompts for these, never commits them).
+services:
+  - type: web
+    name: fieldready-api
+    runtime: docker
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    plan: standard # 2GB RAM — Chromium alongside Node/Fastify wants real
+    # headroom; starter's 512MB is a real risk of OOM-killing a PDF
+    # generation mid-render. Not load-tested at scale — resize based on
+    # actual observed memory once real traffic exists, this is a
+    # reasonable starting point, not a measured minimum.
+    region: frankfurt # closest Render region to Portugal as of writing;
+    # change freely, nothing here depends on a specific region.
+    healthCheckPath: /health
+    disk:
+      name: fieldready-api-objects
+      mountPath: /data
+      sizeGB: 1 # photos + generated REF PDFs — see HOSTING.md's "object
+      # store" section for why this is a real, honestly-documented
+      # limitation (single instance only, no horizontal scaling) rather
+      # than a production-grade fix.
+    envVars:
+      - key: HOST
+        value: "0.0.0.0"
+      - key: PORT
+        value: "3001"
+      - key: FIELDREADY_RUNTIME_DIR
+        value: /data
+      - key: SESSION_JWT_SECRET
+        generateValue: true # Render generates and stores a real random
+        # value itself — never set this to a guessable string.
+      - key: SUPABASE_PROJECT_REF
+        sync: false
+      - key: SUPABASE_DB_PASSWORD
+        sync: false
+      - key: SUPABASE_DB_POOLER_HOST
+        sync: false # see apps/api/HOSTING.md — get this one value from
+        # the Supabase dashboard (Project Settings -> Database -> Connect),
+        # it can't be derived from SUPABASE_PROJECT_REF alone.
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      # Optional — Veryfi receipt OCR (Phase 4, F20). Leave all four unset
+      # to keep using FixtureReceiptOcrProvider (deterministic, no real
+      # vendor call) — see apps/api/.env.example's own comment on this.
+      - key: VERYFI_CLIENT_ID
+        sync: false
+      - key: VERYFI_CLIENT_SECRET
+        sync: false
+      - key: VERYFI_USERNAME
+        sync: false
+      - key: VERYFI_API_KEY
+        sync: false

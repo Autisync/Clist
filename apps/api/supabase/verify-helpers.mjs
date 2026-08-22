@@ -17,11 +17,20 @@ export function createReporter() {
   };
 }
 
+// Hosting-portability fix (same reasoning as src/db.ts's own
+// SUPABASE_DB_POOLER_HOST, see that file's comment): the direct connection
+// host is IPv6-only, confirmed empirically to fail outright from any
+// environment without real IPv6 egress (a CI runner, for instance) — every
+// verify/apply/seed script sharing this one helper picks up the same
+// IPv4-reachable Supavisor pooler fix automatically if
+// SUPABASE_DB_POOLER_HOST is set, with no call site needing to change.
 export function pgClientConfig(projectRef, dbPassword) {
+  const poolerHost = process.env.SUPABASE_DB_POOLER_HOST;
   return {
-    host: `db.${projectRef}.supabase.co`,
-    port: 5432,
-    user: 'postgres',
+    host: poolerHost ?? `db.${projectRef}.supabase.co`,
+    port: 5432, // session mode, not 6543 — confirmed SET LOCAL role/
+    // app.current_tenant_id behave identically to a direct connection.
+    user: poolerHost ? `postgres.${projectRef}` : 'postgres',
     password: dbPassword,
     database: 'postgres',
     ssl: { rejectUnauthorized: false },
