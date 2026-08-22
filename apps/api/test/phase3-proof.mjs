@@ -19,11 +19,15 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import Holidays from "date-holidays";
+import { resetFastifySchema } from "./db-reset.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../");
 const RUNTIME_DIR = path.join(os.tmpdir(), "fieldready-proof-phase3");
 const FIXTURES_PATH = path.join(RUNTIME_DIR, "phase1-fixtures.json");
+// Real-Postgres swap: db.ts now persists into a real Postgres schema, not
+// an on-disk PGlite directory — this proof's own dedicated schema.
+const FASTIFY_DB_SCHEMA = "fastify_api_proof_phase3";
 const PORT = 3914;
 const BASE = `http://127.0.0.1:${PORT}`;
 const JWT_SECRET = "phase3-proof-fixed-secret"; // fixed across restart so a live cookie stays valid, same reason phase2-proof.mjs's own comment gives (not exercised here, kept for parity)
@@ -93,6 +97,7 @@ function spawnServer() {
           PORT: String(PORT),
           SESSION_JWT_SECRET: JWT_SECRET,
           FIELDREADY_RUNTIME_DIR: RUNTIME_DIR,
+          FASTIFY_DB_SCHEMA,
           LOG: "0",
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -216,10 +221,13 @@ function addWorkingDaysExpected(fromDate, days, { subdivision } = {}) {
 }
 function isoDate(d) { return d.toISOString().slice(0, 10); }
 
-// PGlite returns `date`-typed columns as plain 'YYYY-MM-DD' strings, not JS
-// Date objects (confirmed against apps/api/src/domain/dispatch-gate.ts's own
-// comment on calibration_expires_on) — normalize defensively anyway so this
-// assertion doesn't silently break if that ever changes.
+// `date`-typed columns can come back as either a plain 'YYYY-MM-DD' string
+// or a JS Date object depending on the driver/serialization path in between
+// (PGlite parses them into Date objects — a real, previously-undetected bug
+// in dispatch-gate.ts's calibration check turned out to hinge on exactly
+// this, see that file's own comment; apps/api/src/db.ts now pins `pg`'s
+// date parser back to a raw string for parity) — normalize defensively so
+// this assertion doesn't care which shape actually made it through.
 function normalizeDueOn(value) {
   if (typeof value === "string") return value.slice(0, 10);
   if (value instanceof Date) return isoDate(value);
@@ -247,6 +255,8 @@ const NAIVE_REF_DUE_ON_WOULD_BE = "2026-04-15"; // weekend-only skip, no holiday
 async function main() {
   console.log(`Clean slate: removing ${RUNTIME_DIR}`);
   rmSync(RUNTIME_DIR, { recursive: true, force: true });
+  console.log(`Clean slate: dropping schema ${FASTIFY_DB_SCHEMA}`);
+  await resetFastifySchema(FASTIFY_DB_SCHEMA);
 
   console.log("Starting API (first boot — applies schema/seed/Phase 1 fixtures)...");
   serverProc = await spawnServer();

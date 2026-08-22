@@ -1,5 +1,5 @@
 // 05-phase2-job-loop.md §6a, 04-API-SPEC.md §5 — the dispatch gate. Kept
-// pure of any Fastify types (only PGliteTx) so it's unit-testable
+// pure of any Fastify types (only DbTx) so it's unit-testable
 // standalone, same as job-creation.ts's own note about itself. The route
 // (routes/jobs.ts POST /jobs/:id/dispatch) just maps {ok:true}/{ok:false}
 // to 200/409.
@@ -13,7 +13,7 @@
 //   d. if tenant.compliance_profile != basic, ited_classification has
 //      actually been reviewed by a human, not just defaulted
 
-import type { PGliteTx } from "../db.js";
+import type { DbTx } from "../db.js";
 
 export type DispatchBlockingReason =
   | { kind: "checklist_item"; item_id: string; label: string }
@@ -52,7 +52,7 @@ function toIsoDate(value: string | Date | null): string | null {
  * specifies.
  */
 export async function evaluateDispatchGate(
-  tx: PGliteTx,
+  tx: DbTx,
   tenantId: string,
   jobId: string
 ): Promise<DispatchGateResult> {

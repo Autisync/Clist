@@ -1,6 +1,6 @@
 // 07-phase4-cost-intelligence.md §4, 04-API-SPEC.md §3, fieldready-prototype.jsx
 // (openState ~line 255, sourcingOptions ~line 269, pickupPlan ~line 718).
-// Kept pure of any Fastify types (only PGliteTx), same "unit-testable
+// Kept pure of any Fastify types (only DbTx), same "unit-testable
 // standalone" shape as dispatch-gate.ts.
 //
 // This ports the prototype's working, reviewed JS -- it does not redesign
@@ -12,7 +12,7 @@
 //     (items covered desc, currently-open desc, total price asc) -- the
 //     exact tuple the prototype's pickupPlan sorts on.
 
-import type { PGliteTx } from "../db.js";
+import type { DbTx } from "../db.js";
 import type { SupplierHours } from "@fieldready/core";
 
 export type OpenState = { open: boolean; text: string };
@@ -110,7 +110,7 @@ type SourcingRow = {
  * supplier filtering is needed here.
  */
 export async function sourcingOptions(
-  tx: PGliteTx,
+  tx: DbTx,
   tenantId: string,
   itemId: string,
   now: Date = new Date()
@@ -175,7 +175,7 @@ export type MissingItem = {
  * sourcingOptions's price-only sort; must not be conflated with it.
  */
 export async function pickupPlan(
-  tx: PGliteTx,
+  tx: DbTx,
   tenantId: string,
   missingItems: MissingItem[],
   now: Date = new Date()

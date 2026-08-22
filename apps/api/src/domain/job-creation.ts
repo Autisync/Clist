@@ -4,17 +4,17 @@
 // test-protocol snapshots, at job-creation time, once, per architecture §5's
 // "resolved once, never re-read" rule.
 //
-// Kept pure of any Fastify types (only PGliteTx) so it's unit-testable
+// Kept pure of any Fastify types (only DbTx) so it's unit-testable
 // standalone, same as dispatch-gate.ts wants to be (§4's own implementation
 // note) — the route (routes/quotes.ts) is the only thing that knows about
 // HTTP.
 
-import type { PGliteTx } from "../db.js";
+import type { DbTx } from "../db.js";
 
 export type ResolvedTemplateBody = Record<string, unknown>;
 
 export type CreateJobFromQuoteParams = {
-  tx: PGliteTx;
+  tx: DbTx;
   tenantId: string;
   jobId: string;
   quoteId: string;
@@ -62,7 +62,7 @@ export function slugify(input: string): string {
 // first when both a tenant-owned and a system template share the same code;
 // falls through to the system row otherwise.
 async function resolveActiveTemplateVersion(
-  tx: PGliteTx,
+  tx: DbTx,
   kind: string,
   code: string
 ): Promise<ResolvedTemplateBody | null> {
@@ -121,7 +121,7 @@ function inferNetworkTypeFromJobType(jobType: string): "SMATV" | "FO" | "PC" | "
 // has more than one active protocol for the same network_type at the same
 // layer; it does not encode any resolution meaning of its own.
 async function resolveActiveTestProtocolByNetworkType(
-  tx: PGliteTx,
+  tx: DbTx,
   networkType: "SMATV" | "FO" | "PC" | "CC"
 ): Promise<ResolvedTemplateBody | null> {
   const rows = await tx.query<{ body: ResolvedTemplateBody }>(

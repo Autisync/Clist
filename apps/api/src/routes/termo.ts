@@ -41,7 +41,7 @@ function refTermoMismatchError(message: string) {
 }
 
 async function tenantComplianceProfile(
-  tx: import("../db.js").PGliteTx,
+  tx: import("../db.js").DbTx,
   tenantId: string
 ): Promise<string> {
   const rows = await tx.query<{ compliance_profile: string }>(

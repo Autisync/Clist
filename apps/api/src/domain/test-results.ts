@@ -14,14 +14,14 @@
 // outcome='na', per spec.
 
 import { evalTest, type JobTestResultRecordRequest, type TestProtocolBody } from "@fieldready/core";
-import type { PGliteTx } from "../db.js";
+import type { DbTx } from "../db.js";
 
 export type RecordTestResultResult =
   | { kind: "ok"; row: Record<string, unknown> }
   | { kind: "not_found" };
 
 export async function recordTestResult(
-  tx: PGliteTx,
+  tx: DbTx,
   tenantId: string,
   jobId: string,
   userId: string,

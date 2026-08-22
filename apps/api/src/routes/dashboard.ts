@@ -12,7 +12,7 @@
 // real.
 
 import type { FastifyInstance } from "fastify";
-import { withTenant, type PGliteTx } from "../db.js";
+import { withTenant, type DbTx } from "../db.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sourcingOptions } from "../domain/sourcing.js";
 
@@ -155,7 +155,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   app.get("/dashboard/price-alerts", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
 
-    const alerts = await withTenant(tenantId, async (tx: PGliteTx) => {
+    const alerts = await withTenant(tenantId, async (tx: DbTx) => {
       const rows = await tx.query<
         PriceAlertRow & { item_name: string; item_sku: string; supplier_name: string }
       >(
@@ -214,7 +214,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   app.get("/dashboard/recommended-actions", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
 
-    const actions = await withTenant(tenantId, async (tx: PGliteTx) => {
+    const actions = await withTenant(tenantId, async (tx: DbTx) => {
       const out: { priority: "Alta" | "Média" | "Baixa"; title: string; why: string }[] = [];
 
       // 1. Readiness-gate action -- mirrors the prototype's first static

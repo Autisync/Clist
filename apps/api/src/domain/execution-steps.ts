@@ -7,7 +7,7 @@
 // retried request, or a replayed sync batch) updates the same row rather
 // than erroring or duplicating.
 
-import type { PGliteTx } from "../db.js";
+import type { DbTx } from "../db.js";
 
 export type ExecutionStepCompletionRow = {
   step_order: number;
@@ -20,7 +20,7 @@ export type CompleteExecutionStepResult =
   | { kind: "not_found" };
 
 export async function completeExecutionStep(
-  tx: PGliteTx,
+  tx: DbTx,
   tenantId: string,
   jobId: string,
   userId: string,

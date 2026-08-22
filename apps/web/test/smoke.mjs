@@ -15,6 +15,7 @@ import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
+import { resetFastifySchema } from "../../api/test/db-reset.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../");
@@ -30,6 +31,9 @@ const REPO_ROOT = path.resolve(__dirname, "../../../");
 // node_modules/.bin, not into apps/web/node_modules/.bin.
 const NEXT_BIN = path.join(REPO_ROOT, "node_modules/.bin/next");
 const RUNTIME_DIR = path.join(os.tmpdir(), "fieldready-smoke-web");
+// Real-Postgres swap: apps/api/src/db.ts now persists into a real Postgres
+// schema, not an on-disk PGlite directory — this run's own dedicated schema.
+const FASTIFY_DB_SCHEMA = "fastify_api_smoke_web";
 const API_PORT = 3913;
 const WEB_PORT = 3005;
 const API_BASE = `http://127.0.0.1:${API_PORT}`;
@@ -100,6 +104,7 @@ function spawnApi() {
           PORT: String(API_PORT),
           SESSION_JWT_SECRET: JWT_SECRET,
           FIELDREADY_RUNTIME_DIR: RUNTIME_DIR,
+          FASTIFY_DB_SCHEMA,
           LOG: "0",
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -167,6 +172,8 @@ function killHard(proc) {
 async function main() {
   console.log(`Clean slate: removing ${RUNTIME_DIR}`);
   rmSync(RUNTIME_DIR, { recursive: true, force: true });
+  console.log(`Clean slate: dropping schema ${FASTIFY_DB_SCHEMA}`);
+  await resetFastifySchema(FASTIFY_DB_SCHEMA);
 
   console.log("Building apps/web (production build)...");
   // FIELDREADY_API_ORIGIN must be set for THIS build step, not just for

@@ -4,7 +4,7 @@
 // exact same code path.
 
 import type { CreateVanAuditRequest } from "@fieldready/core";
-import type { PGliteTx } from "../db.js";
+import type { DbTx } from "../db.js";
 
 // forms-and-procedures-spec.md F04 — "weekly, configurable". Configurable
 // per-tenant intervals are a real future feature (a small addition to
@@ -20,7 +20,7 @@ export type RecordVanAuditRow = {
 };
 
 export async function recordVanAudit(
-  tx: PGliteTx,
+  tx: DbTx,
   tenantId: string,
   userId: string,
   body: CreateVanAuditRequest

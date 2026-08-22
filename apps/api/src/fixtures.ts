@@ -5,7 +5,7 @@
 // target of the trivial sync mutation — inserted directly, the same way
 // verify-schema.mjs's own fixtures are, not via any endpoint.
 
-import type { PGlite } from "@electric-sql/pglite";
+import type { DbTx } from "./db.js";
 import bcrypt from "bcryptjs";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { RUNTIME_DIR } from "./runtime-dir.js";
@@ -29,7 +29,7 @@ export const PHASE1_FIXTURES = {
   technicianDeviceLabel: "Rui — telemóvel de proof",
 } as const;
 
-export async function seedPhase1Fixtures(db: PGlite): Promise<void> {
+export async function seedPhase1Fixtures(db: DbTx): Promise<void> {
   const existing = await db.query<{ id: string }>(
     `select id from tenant where slug = $1;`,
     [PHASE1_FIXTURES.tenantA.slug]

@@ -11,7 +11,7 @@
 // statement in jobs.ts -- not a variant of this function.
 
 import type { JobCloseoutTechnicianRequest } from "@fieldready/core";
-import type { PGliteTx } from "../db.js";
+import type { DbTx } from "../db.js";
 import { insertTermoDeadline } from "./deadlines.js";
 
 export type SubmitCloseoutResult =
@@ -19,7 +19,7 @@ export type SubmitCloseoutResult =
   | { kind: "not_found" };
 
 export async function submitCloseout(
-  tx: PGliteTx,
+  tx: DbTx,
   tenantId: string,
   jobId: string,
   userId: string,

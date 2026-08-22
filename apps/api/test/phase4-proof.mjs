@@ -19,12 +19,15 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
 import { readFileSync, existsSync } from "node:fs";
-import { PGlite } from "@electric-sql/pglite";
+import { resetFastifySchema, openDirectConnection } from "./db-reset.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../");
 const RUNTIME_DIR = path.join(os.tmpdir(), "fieldready-proof-phase4");
 const FIXTURES_PATH = path.join(RUNTIME_DIR, "phase1-fixtures.json");
+// Real-Postgres swap: db.ts now persists into a real Postgres schema, not
+// an on-disk PGlite directory — this proof's own dedicated schema.
+const FASTIFY_DB_SCHEMA = "fastify_api_proof_phase4";
 const PORT = 3915;
 const BASE = `http://127.0.0.1:${PORT}`;
 const JWT_SECRET = "phase4-proof-fixed-secret"; // fixed across restart so a live cookie stays valid (same reason phase1/3-proof.mjs's own comment gives)
@@ -121,6 +124,7 @@ function spawnServer() {
           PORT: String(PORT),
           SESSION_JWT_SECRET: JWT_SECRET,
           FIELDREADY_RUNTIME_DIR: RUNTIME_DIR,
+          FASTIFY_DB_SCHEMA,
           LOG: "0",
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -234,6 +238,8 @@ const TINY_PNG_BASE64 =
 async function main() {
   console.log(`Clean slate: removing ${RUNTIME_DIR}`);
   rmSync(RUNTIME_DIR, { recursive: true, force: true });
+  console.log(`Clean slate: dropping schema ${FASTIFY_DB_SCHEMA}`);
+  await resetFastifySchema(FASTIFY_DB_SCHEMA);
 
   console.log("Starting API (first boot — applies schema/seed/Phase 1 fixtures)...");
   serverProc = await spawnServer();
@@ -457,11 +463,11 @@ async function main() {
   // to hand-verify the expectation. actual_hours has no HTTP write path in
   // this build (confirmed: grep for actual_hours across apps/api/src turns
   // up only the SELECT in routes/jobs.ts and the verify-schema.mjs direct
-  // SQL seed) — set below via a direct PGlite connection to the same
-  // on-disk data the server uses, the same "reachable the same way
+  // SQL seed) — set below via a direct connection into the same Postgres
+  // schema the server uses, the same "reachable the same way
   // verify-schema.mjs is" direct-SQL pattern that file's own actual_hours
   // insert already establishes, run only after the server is killed so
-  // there is never more than one process holding the data directory.
+  // there is never more than one thing touching that schema at once.
   const JOB_TYPE_HV1 = "Reparação de equipamento diverso — Alpha";
   const JOB_TYPE_HV2 = "Reparação de equipamento diverso — Beta";
   const hvJobs = [
@@ -558,10 +564,9 @@ async function main() {
   // ---- numbers via raw SQL, then restart and compare over HTTP ----------
 
   await killServerHard();
-  ok("server killed (SIGKILL) before any direct DB access — never two processes on the same PGlite data dir at once");
+  ok("server killed (SIGKILL) before any direct DB access — never two things touching the same schema at once");
 
-  const dataDir = path.join(RUNTIME_DIR, "pglite");
-  const directDb = new PGlite(dataDir);
+  const directDb = await openDirectConnection(FASTIFY_DB_SCHEMA);
 
   const jobRows = await directDb.query(
     `select id, job_type, quoted_hours from job where id = any($1::uuid[]);`,
@@ -608,13 +613,13 @@ async function main() {
   const expectedFfrPct = round1((100 * firstTimeFixes) / jobsClosed);
   note(`direct-db: independently computed current-month first-time-fix-rate: jobs_closed=${jobsClosed}, first_time_fixes=${firstTimeFixes}, ffr_pct=${expectedFfrPct}`);
 
-  await directDb.close();
+  await directDb.end();
   ok("direct-db: connection closed cleanly before restarting the server");
 
-  console.log("Restarting API against the same on-disk data...");
+  console.log("Restarting API against the same Postgres schema...");
   serverProc = await spawnServer();
   await waitForHealth();
-  ok("server restarted and reconnected to the same PGlite data directory");
+  ok("server restarted and reconnected to the same Postgres schema");
 
   const hoursVarianceRes = await officeA.get("/dashboard/hours-variance");
   const byJobType = hoursVarianceRes.json?.by_job_type ?? [];

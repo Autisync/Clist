@@ -800,3 +800,126 @@ RPC authoring is complete) and final cutover (step 5) — wiring `apps/web`
 to call these instead of Fastify, not further RPC authoring.
 `apps/api/src/db.ts`, every existing route, and `03-schema.sql` itself
 remain untouched by all of this work.
+
+## Fastify→real-Postgres swap — `db.ts` no longer uses PGlite
+
+`src/db.ts`'s own original comment anticipated this exact change: "Swapping
+to a real Postgres server for production... means changing this file's
+connection setup only; every query, policy, and trigger stays identical."
+That's exactly what happened — PGlite (explicitly a Phase 1 stand-in, an
+in-process WASM Postgres persisting to an on-disk directory) is replaced
+with a real `pg.Pool` connection. Not a new external resource: the same
+Supabase Postgres project the Supabase-native migration above already
+proved against, connected to in a completely different way — a plain,
+trusted-backend connection as the `postgres` role (no RLS, no anon key
+involved at all), scoped to its own dedicated schema (`fastify_api` by
+default, override with `FASTIFY_DB_SCHEMA`) so this classic system's tables
+can never collide with the real, RLS-governed production data already
+live in `public`.
+
+What actually changed, and why:
+
+- **Connection**: `new Pool({ host: db.<project-ref>.supabase.co, user:
+  "postgres", ..., options: "-c search_path=<schema>" })`, built from the
+  same `SUPABASE_PROJECT_REF`/`SUPABASE_DB_PASSWORD` `.env` values Step 2's
+  `verify-office-auth.mjs` already used for a different purpose — no new
+  secret to provision.
+- **Schema application is now idempotent against a real, persistent
+  server** rather than "does this fresh temp dir have a `tenant` table
+  yet": `getDb()` checks `information_schema.tables` for the schema's own
+  `tenant` table before applying `03-schema.sql`/`seed.sql`/Phase 1
+  fixtures, so a restarted server reconnects to data that already survived
+  it (the exit criterion every phase proof already required) for the same
+  ordinary reason any long-lived server does — it just never stopped
+  running — rather than because an on-disk file happened not to move.
+- **One deployment-specific substitution inside an otherwise byte-identical
+  `03-schema.sql`**: its one `grant usage on schema public to
+  fieldready_app;` line becomes `grant usage on schema <FASTIFY_DB_SCHEMA>
+  to fieldready_app;` — the only place the DDL text differs at all.
+- **A grant PGlite never required, verified empirically before relying on
+  it**: Supabase's `postgres` role can `SET LOCAL ROLE` to its own built-in
+  roles (`authenticated`/`anon`/`service_role`) with no explicit grant, but
+  *not* to a brand-new custom role like `fieldready_app` without one —
+  confirmed directly against the real project (`SET LOCAL ROLE` failed
+  with "permission denied" until `grant fieldready_app to postgres;` was
+  added as a one-time step during first boot). A traditional standalone
+  Postgres server, connected as whichever role created `fieldready_app` in
+  the first place, wouldn't need this at all.
+- **Date-column type parity**: `pg`'s default parser for `date` (OID 1082)
+  returns a JS `Date`, same as PGlite actually does (see the bug below) —
+  pinned back to a raw `'YYYY-MM-DD'` string via
+  `pg.types.setTypeParser(1082, (v) => v)` so nothing downstream has to
+  care which driver is running underneath it. `numeric` and `timestamptz`
+  already round-trip identically in both drivers — no fix needed there.
+- **Manual transaction handling**: `pg.Pool` has no built-in
+  `.transaction()` helper, so `withTenant()` now does its own
+  `BEGIN`/`SET LOCAL role`/`SET LOCAL app.current_tenant_id`/`COMMIT`, with
+  `ROLLBACK` on any thrown error, on a dedicated checked-out client
+  (`SET LOCAL` is connection-scoped) that's always released back to the
+  pool. A genuine, positive side effect: concurrent requests from
+  different tenants now run on separate real connections instead of
+  serializing through PGlite's single embedded instance.
+- **`PGliteTx` renamed to `DbTx`** (mechanical, mirrored across all 15
+  consuming files — `domain/*.ts`, `routes/*.ts`) — it was always a purely
+  structural `{query, exec}` type, never actually PGlite-specific, and now
+  isn't even nominally so. `fixtures.ts`'s `seedPhase1Fixtures` signature
+  updated the same way.
+
+**A real, pre-existing bug found as a byproduct, not the point of this
+change**: the type-parity investigation above required confirming exactly
+what PGlite hands back for a `date` column, which meant actually querying
+one directly rather than trusting `src/db.ts`'s own prior comment — that
+comment was wrong. PGlite parses `date` into a JS `Date` object, not a
+plain string. `domain/dispatch-gate.ts`'s calibration-expiry check compared
+that value to a string with a bare `<`, which coerces the `Date` through
+its default `toString()` (a locale string), never `toISOString()` — so the
+dispatch gate's condition (c) had never actually detected an expired
+instrument, for any date, since Phase 2. Found while porting the same
+comparison to Supabase's `rpc_dispatch_job` (a pure-SQL date comparison
+with no JS coercion pitfall to hit) and noticing the two implementations
+disagreed. Fixed with an explicit `toIsoDate()` normalizer regardless of
+which shape a driver hands back (see `dispatch-gate.ts`), and
+`phase2-proof.mjs`'s own check for this condition — previously
+"vacuously satisfied" (no equipment/calibration data existed to actually
+exercise it) — now creates real expired-then-renewed calibration data and
+confirms the gate blocks, then un-blocks, for real. Fixed and proven
+independently of the Postgres swap itself (commit `7fc2f6b`), since it's a
+real correctness bug the swap's investigation happened to surface, not a
+consequence of the swap.
+
+**Proof scripts updated for the same reason, mechanically**: every
+`test/phase*-proof.mjs` plus `apps/web/test/smoke.mjs` used to get a truly
+clean slate by `rmSync`-ing its own dedicated on-disk PGlite directory
+before spawning the server; now that `db.ts` persists into a real, shared
+Postgres project, "clean slate" for a proof run means dropping that
+script's own dedicated schema instead (`fastify_api_proof_phase1` /
+`_phase2` / `_phase3` / `_phase4` / `fastify_api_smoke_web` — never the
+bare `fastify_api` real local dev uses) via the new shared
+`test/db-reset.mjs` helper, still never touching `public`. The two proof
+scripts that reach into the database directly mid-run (phase2's
+`instrument_id` snapshot injection, phase4's `actual_hours` write, both for
+data with no HTTP write path by design) now do it through a real `pg`
+connection into that same schema instead of opening a PGlite file. Every
+proof script still gets its own dedicated port and schema, so all five can
+run independently or back-to-back exactly as before.
+
+**Env**: `SUPABASE_PROJECT_REF`/`SUPABASE_DB_PASSWORD` (already required by
+Step 2) now double as this connection's credentials too — no new secret.
+Optional `FASTIFY_DB_SCHEMA` overrides the default `fastify_api` schema
+name. `dev`/`start`/every `proof*` script now load `apps/api/.env` via
+Node's `--env-file` (previously unnecessary — PGlite needed no
+credentials at all).
+
+**Re-verified, not assumed**: `npm run build` (root — all three
+workspaces), `proof:phase1` (21/21), `proof:phase2` (37/37, including the
+real, non-vacuous calibration test above), `proof:phase3` (37/37),
+`proof:phase4` (29/29), and `smoke:web` (23/23) all pass against the real
+Postgres-backed server — identical counts to every prior pass, now with
+zero PGlite involvement anywhere in `apps/api`.
+
+**What this unlocks**: `apps/api` can now be deployed anywhere that can
+reach the public internet on port 5432 (Fly.io, Render, a small VM — see
+`apps/web/VERCEL.md`'s remaining-gap note) instead of needing a
+long-running process with a writable local disk. Playwright PDF generation
+and Veryfi OCR still need a real server process (not Vercel's serverless
+functions), but the database itself is no longer the reason.

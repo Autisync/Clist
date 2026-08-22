@@ -18,15 +18,17 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { PGlite } from "@electric-sql/pglite";
+import { resetFastifySchema, openDirectConnection } from "./db-reset.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../");
 // Own runtime dir, own port — distinct from phase1-proof.mjs's
 // fieldready-proof/3911 so the two proofs can run independently (or back
-// to back) without fighting over the same on-disk PGlite data or TCP port.
+// to back) without fighting over the same TCP port or (real-Postgres swap,
+// apps/api/src/db.ts) the same Postgres schema.
 const RUNTIME_DIR = path.join(os.tmpdir(), "fieldready-proof-phase2");
 const FIXTURES_PATH = path.join(RUNTIME_DIR, "phase1-fixtures.json");
+const FASTIFY_DB_SCHEMA = "fastify_api_proof_phase2";
 const PORT = 3912;
 const BASE = `http://127.0.0.1:${PORT}`;
 const JWT_SECRET = "phase2-proof-fixed-secret"; // fixed across restart so a live cookie stays valid
@@ -106,6 +108,7 @@ function spawnServer() {
           PORT: String(PORT),
           SESSION_JWT_SECRET: JWT_SECRET,
           FIELDREADY_RUNTIME_DIR: RUNTIME_DIR,
+          FASTIFY_DB_SCHEMA,
           LOG: "0",
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -218,6 +221,8 @@ async function createAndActivateTemplate(session, { kind, code, title, body, act
 async function main() {
   console.log(`Clean slate: removing ${RUNTIME_DIR}`);
   rmSync(RUNTIME_DIR, { recursive: true, force: true });
+  console.log(`Clean slate: dropping schema ${FASTIFY_DB_SCHEMA}`);
+  await resetFastifySchema(FASTIFY_DB_SCHEMA);
 
   console.log("Starting API (first boot — applies schema/seed/Phase 1 fixtures)...");
   serverProc = await spawnServer();
@@ -453,7 +458,7 @@ async function main() {
   //
   // test_protocol_snapshot has no HTTP write path (architecture §5:
   // "resolved once, never re-read/rewritten") — injecting an instrument_id
-  // into one already-frozen test entry needs the same direct-PGlite-access
+  // into one already-frozen test entry needs the same direct-DB-access
   // pattern this file's own SIGKILL tests already use elsewhere, not a new
   // one invented for this. Equipment creation and calibration DO have real
   // routes (POST /equipment, POST /equipment/:id/calibration), so only the
@@ -474,20 +479,19 @@ async function main() {
   }
 
   await killServerHard();
-  ok("server killed (SIGKILL) before direct DB access — never two processes on the same PGlite data dir at once");
+  ok("server killed (SIGKILL) before direct DB access — never two things touching the same schema at once");
   {
-    const dataDir = path.join(RUNTIME_DIR, "pglite");
-    const directDb = new PGlite(dataDir);
+    const directDb = await openDirectConnection(FASTIFY_DB_SCHEMA);
     const jobRow = await directDb.query(`select test_protocol_snapshot from job where id = $1;`, [jobId]);
     const snapshot = jobRow.rows[0].test_protocol_snapshot;
     snapshot.tests[0].instrument_id = equipmentId;
     await directDb.query(`update job set test_protocol_snapshot = $1 where id = $2;`, [JSON.stringify(snapshot), jobId]);
-    await directDb.close();
+    await directDb.end();
   }
   ok("direct-db: instrument_id injected into the job's frozen test_protocol_snapshot (no HTTP route exists for this, by design)");
   serverProc = await spawnServer();
   await waitForHealth();
-  ok("server restarted and reconnected to the same PGlite data directory");
+  ok("server restarted and reconnected to the same Postgres schema");
 
   const blockedByCalibration = await officeA.post(`/jobs/${jobId}/dispatch`);
   const calibrationBlocking = (blockedByCalibration.json?.blocking ?? []).find(
@@ -689,7 +693,7 @@ async function main() {
   console.log("  ...  restarting against the same on-disk data");
   serverProc = await spawnServer();
   await waitForHealth();
-  ok("server restarted and reconnected to the same PGlite data directory");
+  ok("server restarted and reconnected to the same Postgres schema");
 
   // Same technician cookie, minted before the kill — proves a device mid-
   // sync when the app died doesn't need to re-authenticate to finish the

@@ -36,36 +36,31 @@ Every page not yet cut over to Supabase — job detail (dispatch, checklist,
 execution steps, test results, close-out), clients, quotes, suppliers,
 technicians, the dashboard, and all of `/field/*` — still calls Fastify via
 the `/api/*` rewrite (`next.config.ts`), which needs `FIELDREADY_API_ORIGIN`
-to point at something real and reachable. Two things have to be true before
-that variable can point at anything meaningful:
+to point at something real and reachable.
 
-1. **`apps/api` needs to actually run somewhere with a public URL.**
-   Vercel's own serverless functions are not a good fit for it as-is —
-   Fastify is written as a long-running server, and two of its
-   responsibilities specifically don't fit a stateless serverless model:
-   Playwright (REF PDF generation, `apps/api/src/routes/ref.ts`) needs a
-   real headless-Chromium process, and the whole app currently assumes one
-   long-lived process. A Node-friendly host that runs a persistent process
-   (Railway, Render, Fly.io, etc.) is the natural fit for `apps/api` as it
-   exists today.
-2. **`apps/api`'s database needs to stop being PGlite.** PGlite
-   (`apps/api/src/db.ts`) is an embedded, in-process, on-disk WASM Postgres
-   — explicitly documented everywhere in this repo as a Phase 1 stand-in,
-   never a production database. It cannot be shared across multiple
-   instances or survive a redeploy the way a real Postgres server does.
-   `db.ts`'s own comment already anticipated this exact swap ("real Fly
-   Postgres/Neon instead of PGlite, same connection setup") — that's a
-   separate, smaller change from the full Supabase-native RLS migration
-   this repo has also been doing, and it hasn't been done yet either. The
-   real Supabase Postgres project already proven throughout `§6` could
-   serve this role directly (`apps/api` connecting to it as a trusted
-   backend client, no RLS/anon-key involved for that connection — a
-   completely different use of the same database than the Supabase-native
-   RPCs use), which would mean one Postgres project for both halves of the
-   architecture during the transition, rather than a third database to
-   provision and keep in sync.
+**Resolved:** `apps/api`'s database is no longer PGlite. It now connects to
+the same real Supabase Postgres project already proven throughout `§6`, as
+a plain trusted-backend client (`postgres` role, no RLS/anon-key involved
+— a completely different use of the same project than the Supabase-native
+RPCs use), scoped to its own dedicated schema (`fastify_api`) so it can
+never collide with the real, RLS-governed data in `public`. See
+`apps/api/README.md`'s "Fastify→real-Postgres swap" section for the full
+rundown. One Postgres project now serves both halves of the architecture
+during the transition — no separate database to provision.
 
-Until both of those are true, `apps/web` can deploy to Vercel and its
+**Still open:** `apps/api` needs to actually run somewhere with a public
+URL. Vercel's own serverless functions are not a good fit for it as-is —
+Fastify is written as a long-running server, and Playwright (REF PDF
+generation, `apps/api/src/routes/ref.ts`) needs a real headless-Chromium
+process, which doesn't fit a stateless serverless model. A Node-friendly
+host that runs a persistent process (Railway, Render, Fly.io, etc.) is the
+natural fit for `apps/api` as it exists today — set that host's environment
+variables from `apps/api/.env.example` (the same `SUPABASE_PROJECT_REF`/
+`SUPABASE_DB_PASSWORD`/`SUPABASE_SERVICE_ROLE_KEY` already in use, plus
+`VERYFI_*` if a real OCR vendor is ever wired in), then point `apps/web`'s
+`FIELDREADY_API_ORIGIN` at its public URL.
+
+Until that host exists, `apps/web` can deploy to Vercel and its
 *already-cut-over* pages will work correctly against real, hosted Supabase
 infrastructure — but the pages still depending on Fastify will fail exactly
 the way they do in local dev today when `apps/api` isn't running (a clear

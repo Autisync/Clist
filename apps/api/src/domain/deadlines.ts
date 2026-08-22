@@ -14,11 +14,11 @@
 // weight this file needs server-side, but must never reach apps/web's
 // client bundles through the barrel.
 import { addWorkingDays, type AddWorkingDaysOptions } from "@fieldready/core/src/deadlines.js";
-import type { PGliteTx } from "../db.js";
+import type { DbTx } from "../db.js";
 
 const STATUTORY_DEADLINE_WORKING_DAYS = 10;
 
-async function tenantHolidayOptions(tx: PGliteTx, tenantId: string): Promise<AddWorkingDaysOptions> {
+async function tenantHolidayOptions(tx: DbTx, tenantId: string): Promise<AddWorkingDaysOptions> {
   const rows = await tx.query<{ country: string; municipality: string | null }>(
     `select country, municipality from tenant where id = $1;`,
     [tenantId]
@@ -37,7 +37,7 @@ async function tenantHolidayOptions(tx: PGliteTx, tenantId: string): Promise<Add
  * not on a retried/idempotent closeout submission.
  */
 export async function insertTermoDeadline(
-  tx: PGliteTx,
+  tx: DbTx,
   tenantId: string,
   jobId: string,
   completedAt: Date
@@ -59,7 +59,7 @@ export async function insertTermoDeadline(
  * job, which is the only place this is called from.
  */
 export async function insertRefDeadline(
-  tx: PGliteTx,
+  tx: DbTx,
   tenantId: string,
   jobId: string,
   issuedAt: Date

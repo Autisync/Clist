@@ -3,7 +3,7 @@
 // documentacao_facultativa/outras_identificacoes_relevantes as "" for
 // office editing via PATCH /jobs/:id/ref (routes/ref.ts).
 //
-// Kept pure of any Fastify types (only PGliteTx), same principle as
+// Kept pure of any Fastify types (only DbTx), same principle as
 // dispatch-gate.ts/job-creation.ts, so it's callable from the route without
 // needing a request object.
 
@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { chromium } from "playwright";
-import type { PGliteTx } from "../db.js";
+import type { DbTx } from "../db.js";
 import type { CaboInstaladoTecnologia, FichaFields, OutroMaterialDesignacao } from "@fieldready/core";
 import type { ObjectStore } from "../object-store.js";
 
@@ -100,7 +100,7 @@ function matchMaterial(text: string): OutroMaterialDesignacao | null {
  *     office-only free text via PATCH
  */
 export async function populateFichaFields(
-  tx: PGliteTx,
+  tx: DbTx,
   _tenantId: string,
   jobId: string
 ): Promise<FichaFields> {

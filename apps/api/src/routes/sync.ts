@@ -24,7 +24,7 @@
 
 import type { FastifyInstance } from "fastify";
 import { SyncMutationsRequest, type SyncMutation, type SyncMutationResult } from "@fieldready/core";
-import { withTenant, type PGliteTx } from "../db.js";
+import { withTenant, type DbTx } from "../db.js";
 import { requireAuth } from "../auth/middleware.js";
 import { completeExecutionStep } from "../domain/execution-steps.js";
 import { recordTestResult } from "../domain/test-results.js";
@@ -32,7 +32,7 @@ import { submitCloseout } from "../domain/closeout.js";
 import { recordVanAudit } from "../domain/van-audit.js";
 
 async function applyMutation(
-  tx: PGliteTx,
+  tx: DbTx,
   tenantId: string,
   userId: string,
   m: SyncMutation

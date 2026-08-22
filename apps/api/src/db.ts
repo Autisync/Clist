@@ -1,62 +1,147 @@
 // Database layer — architecture §3 (RLS is the real isolation mechanism,
-// not just a filter) and §2 (PostgreSQL 16+ via Drizzle in the long run).
+// not just a filter).
 //
-// Phase 1 substitution, noted plainly: this sandboxed dev environment has
-// no Docker/root, so there's no real Postgres server to point at. PGlite is
-// real Postgres (compiled to WASM) running in-process — same SQL, same RLS
-// semantics, same triggers, verified against it already by verify-schema.mjs
-// and verify-seed.mjs in this repo. Swapping to a real Postgres server for
-// production (Fly Postgres/Neon, per architecture §2) means changing this
-// file's connection setup only; every query, policy, and trigger stays
-// identical because they're already real Postgres, not an approximation of
-// one. Drizzle is deferred past this proof for the same reason raw SQL was
-// used in the verification harnesses: fewer places a schema/ORM mismatch
-// could hide while the foundational risk (RLS, sync, auth) is what's being
-// proven.
+// The real-Postgres swap this file's own original comment anticipated
+// ("Swapping to a real Postgres server for production... means changing
+// this file's connection setup only") — PGlite (an in-process, on-disk WASM
+// Postgres, explicitly a Phase 1 stand-in) is replaced with a real
+// connection pool. Every query, policy, and trigger in 03-schema.sql stays
+// exactly as written; this file only changes HOW a connection is made and
+// WHERE its DDL lands, never WHAT the DDL says.
+//
+// The real server is the SAME Supabase Postgres project already proven
+// throughout the Supabase-native migration (08-supabase-native-migration.md)
+// — used here in a completely different way: a plain, trusted-backend
+// connection (the `postgres` role, no RLS/anon-key involved), scoped to its
+// own dedicated schema (FASTIFY_SCHEMA, not `public`) specifically so this
+// classic system's tables can never collide with the real, RLS-governed
+// production data the Supabase-native pages already serve from `public`.
+// Two genuinely separate table sets, one Postgres server — no new external
+// resource to provision, and easy to tear this whole schema down once the
+// Supabase-native cutover is complete and this file's job is done for good.
 
-import { PGlite } from "@electric-sql/pglite";
-import { readFileSync, mkdirSync } from "node:fs";
+import pg from "pg";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { seedPhase1Fixtures } from "./fixtures.js";
-import { RUNTIME_DIR } from "./runtime-dir.js";
+
+const { Pool } = pg;
+
+// PGlite (like most Postgres drivers, this file's own earlier comment
+// notwithstanding — confirmed directly against a real table column, not
+// assumed) returns `date` columns as JS Date objects, not plain strings.
+// domain/dispatch-gate.ts found a real bug that fell out of trusting that
+// wrong assumption (a Date-vs-string `<` comparison that silently never
+// worked) and now normalizes explicitly rather than relying on a
+// particular driver shape — but pinning `pg`'s date parser back to a raw
+// string here keeps behavior identical to what PGlite already produced for
+// every other place in the codebase that never hit that particular bug,
+// so this swap doesn't have to also be an audit of every date comparison
+// in the app. OID 1082 = date.
+pg.types.setTypeParser(1082, (value) => value);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../");
 
-const DATA_DIR = path.join(RUNTIME_DIR, "pglite");
+const FASTIFY_SCHEMA = process.env.FASTIFY_DB_SCHEMA || "fastify_api";
 
-let _db: PGlite | undefined;
+let _pool: pg.Pool | undefined;
 
-async function schemaAlreadyApplied(db: PGlite): Promise<boolean> {
-  const r = await db.query<{ exists: boolean }>(
-    `select exists (select 1 from information_schema.tables where table_name = 'tenant') as exists;`
+function getConnectionConfig(): pg.PoolConfig {
+  const projectRef = process.env.SUPABASE_PROJECT_REF;
+  const dbPassword = process.env.SUPABASE_DB_PASSWORD;
+  if (!projectRef || !dbPassword) {
+    throw new Error(
+      "SUPABASE_PROJECT_REF / SUPABASE_DB_PASSWORD must be set — apps/api now connects to a " +
+        "real Postgres server (see apps/api/README.md's real-Postgres-swap section), not PGlite."
+    );
+  }
+  return {
+    host: `db.${projectRef}.supabase.co`,
+    port: 5432,
+    user: "postgres",
+    password: dbPassword,
+    database: "postgres",
+    ssl: { rejectUnauthorized: false },
+    // Every connection in this pool defaults to FASTIFY_SCHEMA — set once
+    // at connection start via a startup option, not re-set per query.
+    options: `-c search_path=${FASTIFY_SCHEMA}`,
+  };
+}
+
+function wrapAsDbTx(runner: {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+}): DbTx {
+  return {
+    query: (sql, params) => runner.query(sql, params) as Promise<{ rows: never[] }>,
+    exec: (sql) => runner.query(sql),
+  };
+}
+
+async function schemaAlreadyApplied(client: pg.PoolClient): Promise<boolean> {
+  const r = await client.query<{ exists: boolean }>(
+    `select exists (
+       select 1 from information_schema.tables
+       where table_schema = $1 and table_name = 'tenant'
+     ) as exists;`,
+    [FASTIFY_SCHEMA]
   );
   return Boolean(r.rows[0]?.exists);
 }
 
-/** Boots (or reconnects to) the PGlite-backed database, applying
- * 03-schema.sql + seed.sql + Phase 1 fixtures exactly once. Safe to call
- * repeatedly across process restarts against the same PGLITE_DATA_DIR — the
- * whole point is that a killed-and-restarted server reconnects to data that
- * already survived it (Phase 1 exit criterion, CLAUDE.md). */
-export async function getDb(): Promise<PGlite> {
-  if (_db) return _db;
+/** Boots (or reconnects to) the real-Postgres-backed pool, applying
+ * 03-schema.sql + seed.sql + Phase 1 fixtures exactly once, into its own
+ * dedicated schema. Safe to call repeatedly across process restarts — a
+ * killed-and-restarted server reconnects to data that already survived it
+ * (Phase 1 exit criterion, CLAUDE.md), the same guarantee as always, just
+ * against a real server now instead of an on-disk PGlite file (which,
+ * unlike a real server, meant "restart" and "reconnect to the same data"
+ * were only true because the file itself never moved — a real server
+ * makes that guarantee for a much more ordinary reason: it just kept
+ * running the whole time). */
+export async function getDb(): Promise<pg.Pool> {
+  if (_pool) return _pool;
 
-  mkdirSync(path.dirname(DATA_DIR), { recursive: true });
-  const db = new PGlite(DATA_DIR);
-  const alreadyApplied = await schemaAlreadyApplied(db);
+  const pool = new Pool(getConnectionConfig());
+  const client = await pool.connect();
+  try {
+    await client.query(`create schema if not exists ${FASTIFY_SCHEMA};`);
+    const alreadyApplied = await schemaAlreadyApplied(client);
 
-  if (!alreadyApplied) {
-    const schemaSql = readFileSync(path.join(REPO_ROOT, "03-schema.sql"), "utf8");
-    const seedSql = readFileSync(path.join(REPO_ROOT, "seed.sql"), "utf8");
-    await db.exec(schemaSql);
-    await db.exec(seedSql);
-    await seedPhase1Fixtures(db);
+    if (!alreadyApplied) {
+      const schemaSql = readFileSync(path.join(REPO_ROOT, "03-schema.sql"), "utf8")
+        // The one deployment-specific adjustment to an otherwise
+        // unmodified 03-schema.sql: this deployment owns FASTIFY_SCHEMA,
+        // not `public` — real, RLS-governed production data already lives
+        // there (this file's header comment) — and 03-schema.sql's only
+        // reference to `public` at all is this one grant.
+        .replace(
+          "grant usage on schema public to fieldready_app;",
+          `grant usage on schema ${FASTIFY_SCHEMA} to fieldready_app;`
+        );
+      const seedSql = readFileSync(path.join(REPO_ROOT, "seed.sql"), "utf8");
+
+      await client.query(schemaSql);
+      // Supabase-specific requirement, verified empirically before relying
+      // on it (not assumed): the `postgres` role here can SET LOCAL ROLE
+      // to Supabase's own built-in roles (authenticated/anon/service_role)
+      // with no explicit grant, but NOT to a brand-new custom role like
+      // fieldready_app without one — confirmed directly against the real
+      // project (SET LOCAL ROLE failed with "permission denied" until this
+      // grant was added). A traditional standalone Postgres server —
+      // where you'd typically connect as whichever role created
+      // fieldready_app in the first place — wouldn't need this at all.
+      await client.query(`grant fieldready_app to postgres;`);
+      await client.query(seedSql);
+      await seedPhase1Fixtures(wrapAsDbTx(client));
+    }
+  } finally {
+    client.release();
   }
 
-  _db = db;
-  return db;
+  _pool = pool;
+  return pool;
 }
 
 /** Runs `fn` inside a transaction with RLS actually enforced — `SET LOCAL
@@ -64,17 +149,31 @@ export async function getDb(): Promise<PGlite> {
  * anything else, exactly the pattern architecture §3 requires of every
  * request handler and that verify-schema.mjs already proves isolates
  * tenants. tenantId must come from the verified session, never a client
- * field (API spec §1). */
+ * field (API spec §1). A dedicated client is checked out of the pool for
+ * the whole transaction (SET LOCAL is transaction/connection-scoped) and
+ * always released back to the pool, success or failure — unlike PGlite's
+ * single embedded instance, a real pool means concurrent requests from
+ * different tenants now genuinely run on separate connections instead of
+ * serializing through one. */
 export async function withTenant<T>(
   tenantId: string,
-  fn: (tx: PGliteTx) => Promise<T>
+  fn: (tx: DbTx) => Promise<T>
 ): Promise<T> {
-  const db = await getDb();
-  return db.transaction(async (tx) => {
-    await tx.exec(`set local role fieldready_app;`);
-    await tx.query(`select set_config('app.current_tenant_id', $1, true);`, [tenantId]);
-    return fn(tx as unknown as PGliteTx);
-  });
+  const pool = await getDb();
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await client.query(`set local role fieldready_app;`);
+    await client.query(`select set_config('app.current_tenant_id', $1, true);`, [tenantId]);
+    const result = await fn(wrapAsDbTx(client));
+    await client.query("commit");
+    return result;
+  } catch (err) {
+    await client.query("rollback").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /** The one intentionally-elevated path in this codebase: login has no
@@ -82,17 +181,21 @@ export async function withTenant<T>(
  * lookup by email necessarily runs before RLS has anything to scope by.
  * Used ONLY inside the login handlers to find/verify a user row — never to
  * serve tenant data. Everything else in the app goes through withTenant.
- * Real deployment: this becomes a query against a real Postgres connection
- * using a role that owns the tables, same as migrations do — not a new
- * privilege invented for this. */
-export async function withMigrator<T>(fn: (db: PGlite) => Promise<T>): Promise<T> {
-  const db = await getDb();
-  return fn(db);
+ * Runs as the pool's own connecting role (postgres — the role that owns
+ * the tables), same as migrations do, not a new privilege invented for
+ * this deployment. */
+export async function withMigrator<T>(fn: (db: DbTx) => Promise<T>): Promise<T> {
+  const pool = await getDb();
+  return fn(wrapAsDbTx(pool));
 }
 
-// Minimal structural type so route files don't need to import PGlite's
-// transaction type directly.
-export type PGliteTx = {
+// Minimal structural type so route/domain files don't need to import `pg`'s
+// client/pool types directly. Named DbTx (not PGliteTx, this type's former
+// name before the real-Postgres swap) since it's no longer PGlite-specific
+// — every existing route/domain file that imported the old name was
+// updated to this one, a purely mechanical rename verified by a full
+// typecheck, not a behavior change.
+export type DbTx = {
   query: <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<{ rows: T[] }>;
   exec: (sql: string) => Promise<unknown>;
 };

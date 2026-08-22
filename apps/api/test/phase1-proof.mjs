@@ -6,9 +6,9 @@
 // Exercised through the real, running HTTP API — not by calling internal
 // functions — because that's the only way "provably isolated" and "round-
 // trips correctly" mean anything. The server runs as a real child process
-// so step 4 below can SIGKILL it and restart against the same on-disk
-// PGlite data, which is what "surviving a killed-mid-sync app restart"
-// actually requires proving.
+// so step 4 below can SIGKILL it and restart against the same real
+// Postgres schema (apps/api/src/db.ts), which is what "surviving a killed-
+// mid-sync app restart" actually requires proving.
 //
 // Usage: npm run proof   (from apps/api, or via the root proof:phase1 script)
 
@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { resetFastifySchema } from "./db-reset.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../");
@@ -27,6 +28,11 @@ const REPO_ROOT = path.resolve(__dirname, "../../../");
 // freely rm -rf.
 const RUNTIME_DIR = path.join(os.tmpdir(), "fieldready-proof");
 const FIXTURES_PATH = path.join(RUNTIME_DIR, "phase1-fixtures.json");
+// Real-Postgres swap: db.ts now persists into a real Postgres schema, not
+// an on-disk PGlite directory — this proof's own dedicated schema, dropped
+// clean at the top of every run, never the bare "fastify_api" real local
+// dev uses.
+const FASTIFY_DB_SCHEMA = "fastify_api_proof_phase1";
 const PORT = 3911;
 const BASE = `http://127.0.0.1:${PORT}`;
 const JWT_SECRET = "phase1-proof-fixed-secret"; // fixed across restart so a live cookie stays valid
@@ -84,6 +90,7 @@ function spawnServer() {
           PORT: String(PORT),
           SESSION_JWT_SECRET: JWT_SECRET,
           FIELDREADY_RUNTIME_DIR: RUNTIME_DIR,
+          FASTIFY_DB_SCHEMA,
           LOG: "0",
         },
         stdio: ["ignore", "pipe", "pipe"],
@@ -128,6 +135,8 @@ function killServerHard() {
 async function main() {
   console.log(`Clean slate: removing ${RUNTIME_DIR}`);
   rmSync(RUNTIME_DIR, { recursive: true, force: true });
+  console.log(`Clean slate: dropping schema ${FASTIFY_DB_SCHEMA}`);
+  await resetFastifySchema(FASTIFY_DB_SCHEMA);
 
   console.log("Starting API (first boot — applies schema/seed/fixtures)...");
   serverProc = await spawnServer();
@@ -261,7 +270,7 @@ async function main() {
   console.log("  ...  restarting against the same on-disk data");
   serverProc = await spawnServer();
   await waitForHealth();
-  ok("server restarted and reconnected to the same PGlite data directory");
+  ok("server restarted and reconnected to the same Postgres schema");
 
   // Same technician cookie, minted before the kill — proves a device that
   // was mid-sync when the app died doesn't need to re-authenticate to
