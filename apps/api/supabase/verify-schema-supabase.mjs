@@ -15,6 +15,22 @@
 // schema.sql itself creates, never `drop schema public cascade` (that would
 // risk taking out Supabase's own extension objects living in public).
 //
+// ⚠️  §6 Step 5 changed what "safe to re-run" means. The reset below does
+// `drop table ... cascade` on every table this schema owns — tenant, job,
+// everything — which is fine while nothing but disposable test fixtures
+// lives there, but §6 Step 5 put REAL, persistent data on this same
+// project (seed.sql's F11-F14 templates, and from provision-tenant.mjs
+// onward, real tenants/office users/jobs). This script re-seeds seed.sql
+// automatically after its reset (so the F11-F14 templates always survive),
+// but it CANNOT recover a real tenant, its jobs, or anything else created
+// by provision-tenant.mjs or normal app usage — that data is simply gone.
+// Once a real tenant exists on this project, do not run this script again
+// without treating it exactly like `DROP DATABASE` on production: confirm
+// with the user first, same as any other hard-to-reverse destructive
+// action. It remains safe to run today, before any real tenant has been
+// provisioned — the whole schema is still disposable dev/test state below
+// that line.
+//
 // Usage:
 //   cd apps/api && node --env-file=.env supabase/verify-schema-supabase.mjs
 
@@ -99,6 +115,25 @@ try {
   console.log('\nSchema failed to apply — stopping, behavioural checks skipped.');
   await db.end();
   process.exit(1);
+}
+
+// §6 Step 5 changed what this reset means: schema.sql's own tables now
+// carry REAL, persistent reference data (seed.sql's F11-F14 verified test
+// protocols) once §6 Step 5's seed has been applied — this is no longer a
+// disposable dev schema with nothing on it. The drop-and-reapply above
+// (necessary to keep this script re-runnable during schema iteration) wipes
+// that data out along with everything else, so it has to be re-applied
+// immediately, before any of the behavioural checks below add their own
+// throwaway test fixtures on top. Re-seeding is itself idempotent
+// (`on conflict (id) do nothing`, per seed.sql's own header) so this is
+// safe whether or not seed.sql had been applied before this run.
+try {
+  const seedPath = new URL('./seed.sql', import.meta.url).pathname;
+  const seedSql = readFileSync(seedPath, 'utf8');
+  await db.query(seedSql);
+  ok('seed.sql (real F11-F14 reference data) re-applied after the reset');
+} catch (err) {
+  fail('seed re-apply', err);
 }
 
 // ---- 0. Precondition: fn_current_tenant_id can actually read app_user /
@@ -209,14 +244,24 @@ try {
 
 let systemTemplateId;
 try {
+  const testCode = `readiness_tdt_install_${crypto.randomUUID().slice(0, 8)}`;
   const tpl = await asSuperuser(() =>
     db.query(
-      `insert into template (tenant_id, layer, kind, code, title) values (null, 'system', 'checklist', 'readiness_tdt_install', 'Readiness — TDT instalação nova') returning id`
+      `insert into template (tenant_id, layer, kind, code, title) values (null, 'system', 'checklist', $1, 'Readiness — TDT instalação nova') returning id`,
+      [testCode]
     )
   );
   systemTemplateId = tpl.rows[0].id;
+
+  // §6 Step 5 changed this check's baseline: seed.sql's real F11-F14
+  // templates are now genuinely present on this schema alongside this
+  // test's own throwaway fixture, so "exactly 1 system template visible"
+  // no longer holds (it was only ever true on an empty schema). Assert the
+  // real property this check exists to prove instead — the newly-inserted
+  // row specifically is visible cross-tenant, by matching on its own
+  // unique test code, not a bare count of everything.
   const r = await asUser(officeBAuthId, () =>
-    db.query(`select count(*)::int as n from template where layer = 'system'`)
+    db.query(`select count(*)::int as n from template where layer = 'system' and code = $1`, [testCode])
   );
   if (r.rows[0].n === 1) ok('RLS: system template visible cross-tenant as intended');
   else fail('system template visibility', new Error(`expected 1, got ${r.rows[0].n}`));
@@ -687,6 +732,15 @@ for (const id of createdAuthUserIds) {
   if (await deleteAuthUser(id).catch(() => false)) cleanedNow++;
 }
 console.log(`  ${cleanedNow}/${createdAuthUserIds.length} deleted now; any rest will be swept at the start of the next run.`);
+
+// This test's own throwaway system-layer template row (check 3) — not
+// tenant-scoped, so it isn't covered by any tenant-based cleanup, and now
+// that the schema carries real seed data it shouldn't just accumulate as
+// clutter until the next full reset either.
+if (systemTemplateId) {
+  await db.query(`delete from template_version where template_id = $1`, [systemTemplateId]).catch(() => {});
+  await db.query(`delete from template where id = $1`, [systemTemplateId]).catch(() => {});
+}
 
 await db.end();
 

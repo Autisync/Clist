@@ -1,22 +1,17 @@
 "use client";
 
 /*
- * Office login — outside both /office and /field route groups (this page
- * has no shell/nav; it's what an unauthenticated visitor lands on). Plain
- * centered card, zinc/cyan palette per the project's visual identity — the
- * prototype had no login screen to port (it assumed an already-logged-in
- * state), so this is new, functional UI, not a port.
- *
- * middleware.ts redirects unauthenticated /office/* requests here (with
- * ?next=<original path>) — honoring `next` on success is a small, low-risk
- * addition on top of the literal "redirect to /office/jobs" instruction so
- * a bookmarked deep link actually lands where the user meant to go.
+ * Office login — §6 Step 5: real Supabase Auth (signInWithPassword), not
+ * the Fastify /auth/office/login route. Same UI, same copy, same
+ * zinc/cyan palette — the settled interaction design doesn't change, only
+ * what happens on submit. middleware.ts now checks a real Supabase session
+ * for /office/*, so a successful sign-in here is what actually unlocks it.
  */
 
 import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Radio, AlertTriangle } from "lucide-react";
-import { apiFetch, ApiError } from "@/lib/api";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 function LoginForm() {
   const router = useRouter();
@@ -34,17 +29,18 @@ function LoginForm() {
     setError(null);
     setSubmitting(true);
     try {
-      await apiFetch<{ ok: boolean; role: string }>("/auth/office/login", {
-        method: "POST",
-        body: JSON.stringify({ email, password }),
-      });
-      router.push(redirectTo);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
+      const supabase = createSupabaseBrowserClient();
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signInError) {
         setError("Credenciais inválidas.");
-      } else {
-        setError("Não foi possível iniciar sessão. Tente novamente.");
+        return;
       }
+      // Full navigation (not router.push) so middleware.ts re-evaluates
+      // with the just-set Supabase session cookies — a client-side
+      // transition can otherwise race the cookie write.
+      window.location.href = redirectTo;
+    } catch {
+      setError("Não foi possível iniciar sessão. Tente novamente.");
     } finally {
       setSubmitting(false);
     }

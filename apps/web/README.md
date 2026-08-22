@@ -9,6 +9,41 @@ copy are unchanged; only mock state became real `fetch` calls, and the
 visual language was restyled to the cyan/zinc technical identity from this
 project's design pass (not the prototype's original slate/blue/purple).
 
+## §6 Step 5 — Supabase-native cutover, in progress
+
+This app is **mid-migration**, not fully cut over. Two independent auth/
+data systems currently coexist on purpose, per
+`08-supabase-native-migration.md` §6's own "no big-bang cutover" rule:
+
+- **Office login** (`/login`) now calls real Supabase Auth
+  (`signInWithPassword`) instead of `POST /auth/office/login`. `middleware.ts`
+  accepts **either** a valid Supabase session **or** the original
+  `fr_session` cookie for `/office/*` — not Supabase exclusively. A first
+  version required Supabase for the whole tree and broke every
+  still-Fastify-backed office page for anyone who'd only ever logged in the
+  old way (caught by `test/smoke.mjs`, fixed — see the file's own comment).
+- **Cut over to Supabase so far:** `/office/jobs` (the job list) — real
+  RLS-scoped reads of `job`/`client`/`v_job_readiness`, no Fastify in the
+  path. Provisioning a real tenant + office login (no self-serve signup
+  exists) is `apps/api/supabase/provision-tenant.mjs`.
+- **Still entirely Fastify-backed:** job detail (dispatch, checklist,
+  execution steps, test results, close-out), clients, quotes, suppliers,
+  technicians, and the dashboard. These depend on `fr_session` for their own
+  data fetches and will 500 for a user who only has a Supabase session (no
+  Fastify session at all) — this is the honest, expected state of an
+  in-progress cutover, not a hidden regression. Each of these is a future
+  slice, same one-page-at-a-time discipline as everything above.
+- **The five sync mutation RPCs, `rpc_dispatch_job`, and
+  `rpc_create_job_from_quote` are already built and proven** (see
+  `apps/api/README.md`'s Supabase-native section) — porting the pages above
+  is wiring UI to RPCs that already exist and are already tested, not new
+  backend work.
+
+`GET /manifest.json`, `sw.js`, and everything under `/field/*` are
+completely untouched — technician/device auth is deliberately a separate,
+later slice (design doc §2: "more novel, easier to get right in
+isolation").
+
 ## Running it
 
 Needs the API running separately — this app has no database of its own.

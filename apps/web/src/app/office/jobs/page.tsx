@@ -1,23 +1,22 @@
 /*
  * Job list — visual structure ported from fieldready-prototype.jsx's
  * <JobList> (readiness bar, status pill, address/schedule line) per
- * CLAUDE.md ("treat its interaction design as settled"), wired to real
- * data: GET /jobs, then GET /jobs/:id/readiness per row.
+ * CLAUDE.md ("treat its interaction design as settled"). §6 Step 5: reads
+ * now go straight to Supabase (RLS-scoped, real HTTP over PostgREST) via
+ * the server client, not GET /jobs + GET /jobs/:id/readiness through
+ * Fastify. Batching v_job_readiness into one query for every readiness-
+ * relevant job (a single .in(...) call) replaces what was an N+1 Fastify
+ * request per row — a genuine improvement this migration makes possible,
+ * not just a relocation, same as holidays.sql's own note elsewhere.
  *
- * N+1 mitigation (per the build task): readiness is only meaningful
- * before/during execution, so it's only fetched for jobs whose status is
- * ready_check/dispatched/in_progress/testing — closed/cancelled jobs skip
- * the extra request entirely and just show their terminal status pill.
- *
- * There is no technician-name route (checked apps/api/src/routes/*.ts —
- * no GET that lists app_user/technicians), so assigned_to renders as a
- * short id fragment rather than a name, same "omit rather than invent a
- * route" rule as the tenant name in the layout.
+ * There is no technician-name route (checked — no app_user-listing read is
+ * wired here yet), so assigned_to renders as a short id fragment rather
+ * than a name, same "omit rather than invent it" rule as before.
  */
 
 import Link from "next/link";
 import { Briefcase, MapPin } from "lucide-react";
-import { serverApiFetch } from "@/lib/api";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Pill, jobStatusLabel } from "../_components/pill";
 
 type Job = {
@@ -35,11 +34,6 @@ type Job = {
   created_at: string;
 };
 
-// mandatory_total/mandatory_ok/readiness_pct come from v_job_readiness
-// (03-schema.sql — count()/round() over a left join), which can arrive as
-// numeric strings depending on the pg driver's type parsing and is null
-// when a job has zero mandatory checklist items (nullif divide-by-zero) —
-// coerce defensively rather than assume `number`.
 type Readiness = {
   job_id: string;
   mandatory_total: number | string;
@@ -47,31 +41,33 @@ type Readiness = {
   readiness_pct: number | string | null;
 };
 
-type Client = { id: string; name: string };
-
 const eur = (n: string | number) => `€${Number(n).toFixed(2)}`;
 const READINESS_RELEVANT = new Set(["ready_check", "dispatched", "in_progress", "testing"]);
 
 export default async function JobsPage() {
-  const [{ jobs }, { clients }] = await Promise.all([
-    serverApiFetch<{ jobs: Job[] }>("/jobs"),
-    serverApiFetch<{ clients: Client[] }>("/clients"),
+  const supabase = await createSupabaseServerClient();
+
+  const [{ data: jobs, error: jobsError }, { data: clients, error: clientsError }] = await Promise.all([
+    supabase.from("job").select("*").order("created_at", { ascending: false }),
+    supabase.from("client").select("id, name"),
   ]);
+  if (jobsError) throw jobsError;
+  if (clientsError) throw clientsError;
 
-  const clientName = new Map(clients.map((c) => [c.id, c.name]));
+  const clientName = new Map((clients ?? []).map((c) => [c.id, c.name]));
 
-  const relevant = jobs.filter((j) => READINESS_RELEVANT.has(j.status));
-  const readinessEntries = await Promise.all(
-    relevant.map(async (j) => {
-      try {
-        const r = await serverApiFetch<Readiness>(`/jobs/${j.id}/readiness`);
-        return [j.id, r] as const;
-      } catch {
-        return [j.id, null] as const;
-      }
-    })
-  );
-  const readinessByJob = new Map(readinessEntries);
+  const relevantIds = (jobs ?? []).filter((j) => READINESS_RELEVANT.has(j.status)).map((j) => j.id);
+  const readinessByJob = new Map<string, Readiness>();
+  if (relevantIds.length > 0) {
+    const { data: readinessRows, error: readinessError } = await supabase
+      .from("v_job_readiness")
+      .select("*")
+      .in("job_id", relevantIds);
+    if (readinessError) throw readinessError;
+    for (const r of readinessRows ?? []) readinessByJob.set(r.job_id, r as Readiness);
+  }
+
+  const allJobs = (jobs ?? []) as Job[];
 
   return (
     <div className="space-y-5">
@@ -88,13 +84,13 @@ export default async function JobsPage() {
         </Link>
       </div>
 
-      {jobs.length === 0 ? (
+      {allJobs.length === 0 ? (
         <div className="bg-white rounded border border-zinc-200 p-4 text-sm text-zinc-500">
           Ainda não existem trabalhos. Um trabalho é criado a partir de um orçamento aceite.
         </div>
       ) : (
         <div className="bg-white rounded border border-zinc-200 divide-y divide-zinc-100">
-          {jobs.map((j) => {
+          {allJobs.map((j) => {
             const { label, tone } = jobStatusLabel(j.status);
             const r = readinessByJob.get(j.id);
             const pct = r && r.readiness_pct != null ? Number(r.readiness_pct) : 0;
