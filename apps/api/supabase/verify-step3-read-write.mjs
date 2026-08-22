@@ -151,7 +151,7 @@ const tenantB = crypto.randomUUID();
 const marker = crypto.randomUUID().slice(0, 8);
 
 let officeAAuthId, officeBAuthId, techAAuthId, techBAuthId;
-let jobAId, jobBId, itemAId, itemBId;
+let jobAId, jobBId, itemAId, itemBId, techAAppUserId;
 
 async function makeTenantFixture(tenantId, label) {
   const officeEmail = `office-rw-${label}-${marker}@device.fieldready.internal`;
@@ -186,7 +186,10 @@ async function makeTenantFixture(tenantId, label) {
     [tenantId, job.rows[0].id]
   );
 
-  return { officeAuthId, techAuthId, officeEmail, officePassword, jobId: job.rows[0].id, itemId: item.rows[0].id };
+  return {
+    officeAuthId, techAuthId, officeEmail, officePassword,
+    jobId: job.rows[0].id, itemId: item.rows[0].id, techAppUserId,
+  };
 }
 
 try {
@@ -199,6 +202,7 @@ try {
   const fxA = await makeTenantFixture(tenantA, 'a');
   const fxB = await makeTenantFixture(tenantB, 'b');
   officeAAuthId = fxA.officeAuthId; techAAuthId = fxA.techAuthId; jobAId = fxA.jobId; itemAId = fxA.itemId;
+  techAAppUserId = fxA.techAppUserId;
   officeBAuthId = fxB.officeAuthId; techBAuthId = fxB.techAuthId; jobBId = fxB.jobId; itemBId = fxB.itemId;
 
   ok('fixtures created: 2 tenants, office + paired technician device each, 1 job + 1 checklist item each');
@@ -277,11 +281,31 @@ if (techASession) {
       fail('write path (first apply)', new Error(`expected status=applied, got ${JSON.stringify(data)}`));
     }
 
-    const row = await db.query(`select status from job_checklist_item where id = $1`, [itemAId]);
+    const row = await db.query(
+      `select status, updated_by, updated_at from job_checklist_item where id = $1`,
+      [itemAId]
+    );
     if (row.rows[0].status === 'ok') {
       ok("WRITE: independently confirmed job_checklist_item's status is really 'ok' in the database");
     } else {
       fail('write path (db confirmation)', new Error(`expected status=ok, got ${row.rows[0].status}`));
+    }
+
+    // Review finding (high, confirmed and fixed): rpc_checklist_item_update
+    // used to never set updated_by/updated_at at all — attribution the
+    // office's OWN direct PATCH route always recorded, silently dropped the
+    // moment a caller (this RPC, or apps/web's office job-detail page) used
+    // this shared write path instead. Confirmed here it resolves to the
+    // actual calling session's own app_user id, not null and not some other
+    // row — the same class of check every other attribution column in this
+    // codebase already gets.
+    if (row.rows[0].updated_by === techAAppUserId && row.rows[0].updated_at !== null) {
+      ok('WRITE: updated_by resolves to the calling session\'s own app_user id, updated_at is set');
+    } else {
+      fail(
+        'write path (updated_by/updated_at attribution)',
+        new Error(`expected updated_by=${techAAppUserId}, non-null updated_at; got ${JSON.stringify(row.rows[0])}`)
+      );
     }
   } catch (err) {
     fail('write path (first apply)', err);

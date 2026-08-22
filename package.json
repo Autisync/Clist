@@ -24,6 +24,8 @@
     "verify:holidays-supabase": "node --env-file=apps/api/.env apps/api/supabase/verify-holidays.mjs",
     "verify:step4-supabase": "node --env-file=apps/api/.env apps/api/supabase/verify-step4-rpc.mjs",
     "verify:create-job-supabase": "node --env-file=apps/api/.env apps/api/supabase/verify-create-job.mjs",
+    "verify:job-complete-supabase": "node --env-file=apps/api/.env apps/api/supabase/verify-job-complete.mjs",
+    "apply:rpc-supabase": "node --env-file=apps/api/.env apps/api/supabase/apply-rpc.mjs",
     "seed:supabase": "node --env-file=apps/api/.env apps/api/supabase/apply-seed.mjs",
     "provision:tenant-supabase": "node --env-file=apps/api/.env apps/api/supabase/provision-tenant.mjs",
     "seed:demo-job-supabase": "node --env-file=apps/api/.env apps/api/supabase/seed-demo-job.mjs"

@@ -22,22 +22,32 @@ data systems currently coexist on purpose, per
   version required Supabase for the whole tree and broke every
   still-Fastify-backed office page for anyone who'd only ever logged in the
   old way (caught by `test/smoke.mjs`, fixed — see the file's own comment).
-- **Cut over to Supabase so far:** `/office/jobs` (the job list) — real
-  RLS-scoped reads of `job`/`client`/`v_job_readiness`, no Fastify in the
-  path. Provisioning a real tenant + office login (no self-serve signup
-  exists) is `apps/api/supabase/provision-tenant.mjs`.
-- **Still entirely Fastify-backed:** job detail (dispatch, checklist,
-  execution steps, test results, close-out), clients, quotes, suppliers,
+- **Cut over to Supabase so far:** `/office/jobs` (the job list) and
+  `/office/jobs/:id` (job detail — all three tabs: Readiness, Execução,
+  After-action report) — real RLS-scoped reads of
+  `job`/`client`/`v_job_readiness`/`job_checklist_item`, and every write
+  (checklist toggle, dispatch, execution-step complete, test-result record,
+  complete, close-out, rework-cause) now calls `supabase.rpc(...)` directly
+  from the browser instead of a Fastify route. Two of those RPCs
+  (`rpc_job_complete`, `rpc_closeout_set_rework_cause`) are new — see
+  `apps/api/README.md`'s "Fastify→real-Postgres swap" section's sibling, the
+  job-detail cutover writeup, for why `/jobs/:id/complete` needed one beyond
+  the design doc's original six named candidates. **Photo upload is the one
+  write on this page still Fastify-backed** (binary bytes, no Supabase
+  Storage wiring yet — same "structurally can't be an RPC" reasoning as REF
+  PDF generation and Veryfi OCR). Provisioning a real tenant + office login
+  (no self-serve signup exists) is `apps/api/supabase/provision-tenant.mjs`.
+- **Still entirely Fastify-backed:** clients, quotes, suppliers,
   technicians, and the dashboard. These depend on `fr_session` for their own
   data fetches and will 500 for a user who only has a Supabase session (no
   Fastify session at all) — this is the honest, expected state of an
   in-progress cutover, not a hidden regression. Each of these is a future
   slice, same one-page-at-a-time discipline as everything above.
-- **The five sync mutation RPCs, `rpc_dispatch_job`, and
-  `rpc_create_job_from_quote` are already built and proven** (see
-  `apps/api/README.md`'s Supabase-native section) — porting the pages above
-  is wiring UI to RPCs that already exist and are already tested, not new
-  backend work.
+- **Every RPC job detail's write actions call is already built and
+  proven** (see `apps/api/README.md`'s Supabase-native section) — porting
+  the pages above is wiring UI to RPCs that already exist and are already
+  tested, not new backend work, with the one exception (`rpc_job_complete`)
+  called out above.
 
 `GET /manifest.json`, `sw.js`, and everything under `/field/*` are
 completely untouched — technician/device auth is deliberately a separate,

@@ -3,33 +3,28 @@
  * report), structure ported from fieldready-prototype.jsx's <JobDetail>
  * per CLAUDE.md ("treat its interaction design as settled").
  *
- * This stage builds the Readiness tab fully:
- *   - GET /jobs/:id/readiness → checklist items grouped by scope (job/van/
- *     office), each its own section with a done/total pill.
- *   - job/van items are directly togglable (office PATCH
- *     /jobs/:id/checklist/:item_id, matching the prototype's checkbox
- *     interaction); office-scope items render read-only, per the
- *     prototype's documented intent ("auto-verified, never touched here").
- *   - readiness summary banner + "Despachar trabalho" (POST
- *     /jobs/:id/dispatch), with real handling of both 409 shapes
- *     (not_ready → render the server-computed blocking list; wrong_status →
- *     distinct "already past this stage" message).
+ * §6 Step 5: reads now go straight to Supabase (RLS-scoped, real HTTP over
+ * PostgREST) via the server client, matching office/jobs/page.tsx's own
+ * cutover — job row, client name, and checklist items (v_job_readiness +
+ * job_checklist_item) each a direct `.from(...)` query instead of
+ * GET /jobs/:id / GET /clients / GET /jobs/:id/readiness through Fastify.
+ * v_job_readiness is a LEFT JOIN ... GROUP BY (03-schema.sql §13) so every
+ * existing job has exactly one row there — a missing job row is the only
+ * real not-found case, not a separate one to handle for the view.
  *
- * Execução and After-action report are stubbed placeholder tabs (later
- * stages) — clicking them never breaks the page, they just show a calm
- * "ainda não implementado" panel instead of fetching data that doesn't
- * exist yet.
- *
- * There is no GET /jobs/:id/... route that returns the client's name, and
- * no GET /clients/:id (checked apps/api/src/routes/clients.ts — only the
- * tenant-scoped list) — same pattern as quotes/[id]/page.tsx: fetch
- * GET /clients and find by id server-side, not a second route that doesn't
- * exist.
+ * All three tabs' write actions (checklist toggle, dispatch, execution
+ * steps, test results, complete, closeout, rework-cause) are wired to the
+ * same Supabase project from job-detail.tsx — see that file's own comment
+ * for which RPC backs each one, and rpc_job_complete's new addition to
+ * rpc.sql for the one write that needed a new function. Photo upload alone
+ * stays Fastify-backed (binary bytes, no Supabase Storage wiring in this
+ * slice — same "structurally can't be an RPC" reasoning as REF PDF
+ * generation and Veryfi OCR, 08-supabase-native-migration.md §4).
  */
 
 import { notFound } from "next/navigation";
 import { Briefcase } from "lucide-react";
-import { serverApiFetch, ApiError } from "@/lib/api";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { JobDetail } from "./_components/job-detail";
 
 // execution_steps template body, frozen onto the job row at creation time —
@@ -80,8 +75,6 @@ type Job = {
   created_at: string;
 };
 
-type Client = { id: string; name: string; address: string | null };
-
 export type ChecklistItem = {
   id: string;
   cat: "material" | "equipment" | "doc";
@@ -109,21 +102,42 @@ export default async function JobDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  const supabase = await createSupabaseServerClient();
 
-  let job: Job;
-  try {
-    job = await serverApiFetch<Job>(`/jobs/${id}`);
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 404) notFound();
-    throw err;
-  }
+  const { data: job, error: jobError } = await supabase
+    .from("job")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (jobError) throw jobError;
+  if (!job) notFound();
 
-  const [{ clients }, readiness] = await Promise.all([
-    serverApiFetch<{ clients: Client[] }>("/clients"),
-    serverApiFetch<Readiness>(`/jobs/${id}/readiness`),
+  const [
+    { data: client, error: clientError },
+    { data: readinessSummary, error: readinessError },
+    { data: items, error: itemsError },
+  ] = await Promise.all([
+    supabase.from("client").select("id, name, address").eq("id", job.client_id).maybeSingle(),
+    supabase.from("v_job_readiness").select("*").eq("job_id", id).maybeSingle(),
+    supabase
+      .from("job_checklist_item")
+      .select("id, cat, label, qty, item_id, scope, mandatory, status, updated_by, updated_at")
+      .eq("job_id", id)
+      .order("scope")
+      .order("cat")
+      .order("label"),
   ]);
+  if (clientError) throw clientError;
+  if (readinessError) throw readinessError;
+  if (itemsError) throw itemsError;
 
-  const client = clients.find((c) => c.id === job.client_id) ?? null;
+  const readiness: Readiness = {
+    job_id: id,
+    mandatory_total: readinessSummary?.mandatory_total ?? 0,
+    mandatory_ok: readinessSummary?.mandatory_ok ?? 0,
+    readiness_pct: readinessSummary?.readiness_pct ?? null,
+    items: (items ?? []) as ChecklistItem[],
+  };
 
   return (
     <div className="max-w-3xl space-y-5">
@@ -137,7 +151,7 @@ export default async function JobDetailPage({
         </div>
       </div>
 
-      <JobDetail job={job} clientName={client?.name ?? null} initialReadiness={readiness} />
+      <JobDetail job={job as Job} clientName={client?.name ?? null} initialReadiness={readiness} />
     </div>
   );
 }

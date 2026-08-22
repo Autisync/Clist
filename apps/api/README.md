@@ -923,3 +923,141 @@ reach the public internet on port 5432 (Fly.io, Render, a small VM — see
 long-running process with a writable local disk. Playwright PDF generation
 and Veryfi OCR still need a real server process (not Vercel's serverless
 functions), but the database itself is no longer the reason.
+
+## Supabase-native migration — §6 Step 5: office job-detail cutover
+
+`apps/web`'s `/office/jobs/:id` page (all three tabs — Readiness, Execução,
+After-action report) now calls Supabase directly for every read and every
+write except photo upload, matching `/office/jobs`'s own earlier cutover.
+Reads go through `createSupabaseServerClient()` (job row, client name,
+`v_job_readiness`, `job_checklist_item`, each a plain `.from(...)` query —
+no new RPC needed for these, RLS alone is the boundary, same as the job
+list page). Writes go through `supabase.rpc(...)` calls from the browser,
+one per action:
+
+| Action | RPC | New this slice? |
+|---|---|---|
+| Checklist toggle | `rpc_checklist_item_update` | no (§6 Step 3) |
+| Dispatch | `rpc_dispatch_job` | no (§6 Step 4) |
+| Execution step complete | `rpc_execution_step_complete` | no (§6 Step 4) |
+| Test result record | `rpc_test_result_record` | no (§6 Step 4) |
+| Complete (dispatched→testing) | `rpc_job_complete` | **yes** |
+| Close-out submit | `rpc_closeout_submit` | no (§6 Step 4) |
+| Rework-cause (office-only) | `rpc_closeout_set_rework_cause` | **yes** |
+| Photo upload | — (stays Fastify) | n/a |
+
+**Two new RPCs, for two different reasons — neither was in §4's original
+six named candidates, because neither route existed as a distinct write
+concern until this slice actually tried to port it:**
+
+- **`rpc_job_complete(p_job_id uuid)`** ports `POST /jobs/:id/complete`
+  (`routes/jobs.ts`) — a genuinely separate transition from
+  `rpc_closeout_submit`, not a duplicate of it: the office two-step flow's
+  first step (dispatched/in_progress/testing → testing, stamps
+  `completed_at`), distinct from close-out's own later
+  testing/closed transition. Qualifies for an RPC on the same grounds
+  `rpc_dispatch_job` already did (§4): a read-decide-write sequence (status
+  precondition, conditional `compliance_deadline` insert) a client observing
+  it through several separate calls could race. Added `FOR UPDATE` the
+  Fastify route never had — not a literal port of a known-safe original but
+  a fix for the same TOCTOU shape `rpc_dispatch_job`'s own comment already
+  named and closed for its sibling function; reproducing the unlocked read
+  here would have been reproducing a known bug class, not preserving
+  intended behavior.
+- **`rpc_closeout_set_rework_cause(p_job_id uuid, p_rework_cause text)`**
+  ports `PATCH /jobs/:id/closeout/rework-cause`. Expected going in that this
+  would be a plain client-side `.update()` (no atomicity concern) — turned
+  out to need an RPC anyway, because `rework_cause_set_by` must be resolved
+  server-side from the calling session the same way every other attribution
+  column in this codebase already is (`ited_classification_by`,
+  `updated_by`, `closed_by`, `completed_by`, `performed_by`): a plain RLS-
+  scoped write would let the client supply that value itself, letting any
+  caller claim any `app_user` id — exactly the kind of gap RLS-as-sole-
+  boundary is supposed to close, not reopen. `fn_current_app_user_id()` is
+  `SECURITY DEFINER` precisely so a `SECURITY INVOKER` RPC can resolve it
+  safely (`schema.sql`'s own comment on that function); technician role-
+  gating from the Fastify version is deliberately not ported, since no
+  technician session can reach this at all until technician auth is
+  migrated to Supabase (still a later, separate slice) — flagged in the
+  function's own comment as a real gap to close then, not silently relied on.
+
+`apps/api/supabase/apply-rpc.mjs` (new) re-applies the whole of `rpc.sql`
+idempotently (`create or replace function` throughout) — `npm run
+apply:rpc-supabase` from the repo root — the tool used to push both new
+functions to the real project.
+
+**Proven, not assumed**: `apps/api/supabase/verify-job-complete.mjs` (new,
+**20/20 checks passing**, `npm run verify:job-complete-supabase`) — both
+new RPCs, over real HTTP with real Supabase Auth sign-ins, deliberately
+*not* re-deriving the dispatch gate or `fn_add_working_days`' holiday-aware
+arithmetic (both already proven elsewhere): the wrong-status conflict, RLS
+correctly returning `not_found` (not a 403) for a cross-tenant job id on
+both new RPCs, the happy path with a real `termo` `compliance_deadline` row
+inserted exactly once, no duplicate on a retried call, the `basic`-profile
+tenant completing with *no* deadline row, an unknown job id returning
+`not_found` rather than an error, and — independently, via a direct
+superuser read, not just the RPC's own echoed return value —
+`rework_cause_set_by` actually resolving to the signed-in office user's own
+`app_user` row.
+
+Also verified live, end to end, through the real browser against the real
+Supabase project (a temporary tenant/job/user provisioned and torn down
+afterward, not committed as a fixture): sign-in, checklist toggle
+(readiness % updating live), a blocked dispatch attempt rendering the
+server-computed blocking reasons (`van_audit_stale` +
+`ited_classification_unreviewed`), a successful dispatch once both were
+satisfied directly via SQL, execution/complete/close-out/rework-cause all
+the way through, and a final independent SQL read confirming
+`rework_cause_set_by` and the `termo` `compliance_deadline` row both landed
+correctly — the same proof this section's automated script already gives,
+just also seen working in an actual rendered page.
+
+**A four-dimension adversarial review of this whole slice (SQL race-safety,
+RLS/tenant isolation, client-wiring parity, completeness/regression) found
+and fixed three real issues, one of them high-severity:**
+
+- **High — `rpc_checklist_item_update` (§6 Step 3, not new this slice) never
+  set `updated_by`/`updated_at` at all**, a faithful port of `sync.ts`'s
+  `applyMutation` for this mutation type (which never set them either) but a
+  real, user-visible regression for the office UI specifically: the
+  office's own direct `PATCH /jobs/:id/checklist/:item_id` route always
+  stamped both. Wiring the office job-detail page to this *shared* RPC
+  instead (this slice) is what first makes that gap bite — the office had
+  attribution before and silently loses it now. Fixed in the RPC itself
+  (benefiting the phone's sync path too, which had the same latent gap),
+  proven with a new assertion in `verify-step3-read-write.mjs` that
+  `updated_by` resolves to the calling session's own `app_user` id.
+- **Medium — the four other office-triggered RPC calls in `job-detail.tsx`
+  only checked `data.status === "rejected"`**, never the replay path: every
+  RPC's idempotency branch returns the *original* stored result with
+  `status` overwritten to `already_applied` but its original `reason` key
+  (present only on a rejection) left untouched, so a hypothetical retry of
+  a `client_mutation_id` whose first attempt was rejected would look like a
+  success. Not reachable today (`job-detail.tsx` generates a fresh
+  `crypto.randomUUID()` per call, never reusing one), but the check is
+  fixed to test for `data.reason` instead, which is correct regardless.
+- **Medium — `rpc_closeout_set_rework_cause`'s emptiness guard used bare
+  `trim()`**, which in Postgres strips only the ASCII space character, not
+  tab/newline/CR — a whitespace-only value using either would have slipped
+  through as "non-empty". Fixed with `!~ '\S'` (no non-whitespace character
+  present, correct for any whitespace), proven with a new tab+newline-only
+  test case the original space-only test case would not have caught.
+- Two low-severity consistency findings on the same function, both fixed:
+  it never resolved/guarded `fn_current_tenant_id()` (every sibling RPC
+  does, for an early, unambiguous error — RLS alone already made this safe,
+  the guard is diagnostic, not a closed hole) and dropped the Fastify
+  route's `technician_cannot_set_rework_cause` role check (justified at the
+  time as "no technician Supabase session exists yet" — true operationally
+  but enforced by nothing). Re-added as a real `app_user.role` check inside
+  the function, proven against a synthetic technician-role Supabase session
+  built purely for this test (technicians don't get real Supabase sessions
+  in the product yet — same pattern `verify-step3-read-write.mjs` already
+  established for exercising this RLS boundary before it matters in
+  practice).
+
+Pre-existing gap, not introduced by this slice and not fixed by it: there
+is still no UI control anywhere in `apps/web` for actually reviewing
+`job.ited_classification` (PRD §7's "route to office review in the UI") —
+the dispatch-gate blocking reason renders as text on this page, same as
+before, but nothing lets an office user act on it from here. Worth a future
+slice; out of scope for this one.

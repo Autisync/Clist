@@ -42,6 +42,18 @@
 -- reads it either ("device clock, ordering only — never trusted for
 -- business logic") — this function ports the actual apply logic, not the
 -- full mutation envelope shape.
+--
+-- §6 Step 5 review finding (high, confirmed): the sync.ts applyMutation
+-- branch this ports never sets updated_by/updated_at either — a real,
+-- pre-existing gap between the phone's sync-mutation path and the office's
+-- OWN direct PATCH /jobs/:id/checklist/:item_id route (which always has,
+-- since Phase 2), that stayed invisible only because the office UI used to
+-- call that direct route, not this shared one. Wiring apps/web's office
+-- job-detail page to THIS function instead (§6 Step 5) is what first makes
+-- the office lose attribution it always recorded before — not a
+-- consequence of anything specific to Supabase, just this function finally
+-- getting a caller that actually needs the column. Fixed here, which also
+-- fixes the phone's own sync path for free — it never had this either.
 create or replace function rpc_checklist_item_update(
   p_client_mutation_id uuid,
   p_job_id uuid,
@@ -53,6 +65,7 @@ language plpgsql
 as $$
 declare
   v_tenant_id uuid;
+  v_app_user_id uuid;
   v_existing  jsonb;
   v_updated_id uuid;
   v_result    jsonb;
@@ -61,6 +74,7 @@ begin
   if v_tenant_id is null then
     raise exception 'rpc_checklist_item_update: no tenant context resolved for this session';
   end if;
+  v_app_user_id := fn_current_app_user_id();
 
   if p_status not in ('ok', 'missing') then
     raise exception 'rpc_checklist_item_update: invalid status %', p_status;
@@ -79,7 +93,7 @@ begin
   end if;
 
   update job_checklist_item
-  set status = p_status
+  set status = p_status, updated_by = v_app_user_id, updated_at = now()
   where id = p_item_id and job_id = p_job_id
   returning id into v_updated_id;
 
@@ -915,4 +929,183 @@ grant execute on function rpc_create_job_from_quote(uuid) to authenticated;
 -- table-by-table cutover of the rest of the surface (step 4's broader scope)
 -- and final cutover (step 5) — not RPC authoring, wiring apps/web to call
 -- these instead of Fastify.
+-- ============================================================================
+
+-- ============================================================================
+-- §6 Step 5: apps/web office job-detail cutover. One new RPC needed beyond
+-- §4's six named candidates — POST /jobs/:id/complete
+-- (routes/jobs.ts) was never in that list because Step 4's scope was
+-- exactly the six the design doc named, not a claim that nothing else ever
+-- needed one. It qualifies on the same grounds rpc_dispatch_job already
+-- did: a read-decide-write sequence (status/completed_at precondition,
+-- conditional compliance_deadline insert) that a client observing it
+-- through several separate calls could race the same way §4 warned about.
+-- ============================================================================
+
+-- rpc_job_complete: port of routes/jobs.ts's POST /jobs/:id/complete
+-- (which itself is not domain/closeout.ts's submitCloseout() — a distinct,
+-- earlier transition: dispatched/in_progress/testing -> testing, stamping
+-- completed_at, for the office two-step flow's first step). Not a sync
+-- mutation (no client_mutation_id/applied_mutation bookkeeping) — like
+-- dispatch, this was never a queued offline mutation, it's a direct,
+-- synchronous office-side action.
+--
+-- FOR UPDATE added here though the Fastify original never had it — the
+-- Fastify route's plain read-then-write has the exact same TOCTOU shape
+-- rpc_dispatch_job's own comment already documents and fixes for its
+-- sibling race: two genuinely concurrent /complete calls on the same job
+-- could both observe completed_at=null before either commits, and both
+-- insert a termo compliance_deadline row (no unique(job_id, kind)
+-- constraint catches the duplicate). Applying the same established fix here
+-- rather than porting the unlocked read literally, since faithfully
+-- reproducing a race this codebase has already named and fixed twice would
+-- be reproducing a known bug, not preserving intended behavior.
+create or replace function rpc_job_complete(p_job_id uuid)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_tenant_id uuid;
+  v_job record;
+  v_updated record;
+  v_compliance_profile text;
+  v_due_on date;
+begin
+  v_tenant_id := fn_current_tenant_id();
+  if v_tenant_id is null then
+    raise exception 'rpc_job_complete: no tenant context resolved for this session';
+  end if;
+
+  select id, status, completed_at into v_job from job where id = p_job_id for update;
+  if not found then
+    return jsonb_build_object('kind', 'not_found');
+  end if;
+
+  if v_job.completed_at is not null or v_job.status not in ('dispatched', 'in_progress', 'testing') then
+    return jsonb_build_object(
+      'kind', 'conflict', 'status', v_job.status, 'completed_at', v_job.completed_at
+    );
+  end if;
+
+  update job set completed_at = now(), status = 'testing'
+  where id = p_job_id
+  returning id, status, completed_at into v_updated;
+
+  select coalesce(compliance_profile, 'basic') into v_compliance_profile
+  from tenant where id = v_tenant_id;
+
+  if v_compliance_profile <> 'basic' then
+    v_due_on := fn_add_working_days((v_updated.completed_at at time zone 'utc')::date, 10);
+    insert into compliance_deadline (tenant_id, job_id, kind, due_on)
+    values (v_tenant_id, p_job_id, 'termo', v_due_on);
+  end if;
+
+  return jsonb_build_object(
+    'kind', 'ok', 'id', v_updated.id, 'status', v_updated.status, 'completed_at', v_updated.completed_at
+  );
+end;
+$$;
+
+comment on function rpc_job_complete(uuid) is
+  '§6 Step 5. SECURITY INVOKER — RLS on job/tenant/compliance_deadline is what '
+  'actually restricts this. FOR UPDATE closes a TOCTOU race the ported Fastify '
+  'route never had a guard against (see comment above); everything else is a '
+  'literal port of routes/jobs.ts''s POST /jobs/:id/complete.';
+
+revoke execute on function rpc_job_complete(uuid) from public;
+grant execute on function rpc_job_complete(uuid) to authenticated;
+
+-- rpc_closeout_set_rework_cause: port of routes/jobs.ts's
+-- PATCH /jobs/:id/closeout/rework-cause. Turned out to need an RPC after
+-- all, not the plain client-side `.update()` this comment originally
+-- expected — not for atomicity, but because rework_cause_set_by must be
+-- resolved server-side from the calling session the same way every other
+-- attribution column in this codebase is (ited_classification_by,
+-- updated_by, closed_by, completed_by, performed_by): a client-supplied
+-- value there would let any caller claim any app_user id, the kind of gap
+-- RLS-as-sole-boundary is supposed to close, not reopen. fn_current_app_user_id()
+-- is SECURITY DEFINER precisely so a plain RLS-scoped write couldn't do
+-- this lookup for itself (schema.sql's own comment on that function) —
+-- calling it from inside a SECURITY INVOKER RPC, the same way
+-- rpc_closeout_submit already does, is the correct shape, not a workaround.
+--
+-- Role gating (technician_cannot_set_rework_cause in the Fastify version) —
+-- §6 Step 5 review finding (low, confirmed): the comment that used to
+-- stand here argued this was safe to skip since technician auth isn't
+-- migrated to Supabase yet, so no technician session could call this at
+-- all — true today, but not something this function itself enforced, only
+-- an operational fact scheduled to stop being true. Ported for real instead
+-- of left as a documented gap: same defense-in-depth reasoning as every
+-- other belt-and-suspenders role check in this codebase (RLS restricts by
+-- tenant, this restricts by role — PRD §6, "rework_cause is office-only").
+--
+-- Two more review findings (both confirmed): the emptiness guard used to be
+-- `length(trim(p_rework_cause)) = 0` — Postgres's bare trim()/btrim()
+-- strips only the ASCII space character by default, not tab/newline/CR, so
+-- a whitespace-only value using any of those would have slipped through as
+-- "non-empty". `!~ '\S'` (no non-whitespace character present) is correct
+-- for any whitespace. And this function used to never resolve/guard
+-- fn_current_tenant_id() at all, unlike every sibling in this file — RLS on
+-- job_closeout still makes that safe on its own (a null tenant context
+-- makes the policy's `tenant_id = null` comparison false for every row, so
+-- the UPDATE just matches nothing and returns not_found), but the explicit
+-- guard is added anyway for the same early, unambiguous diagnostic every
+-- other function in this file gets, not because RLS needed the backup.
+create or replace function rpc_closeout_set_rework_cause(p_job_id uuid, p_rework_cause text)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_tenant_id uuid;
+  v_app_user_id uuid;
+  v_role text;
+  v_row record;
+begin
+  v_tenant_id := fn_current_tenant_id();
+  if v_tenant_id is null then
+    raise exception 'rpc_closeout_set_rework_cause: no tenant context resolved for this session';
+  end if;
+
+  if p_rework_cause is null or p_rework_cause !~ '\S' then
+    raise exception 'rpc_closeout_set_rework_cause: rework_cause must be non-empty';
+  end if;
+
+  v_app_user_id := fn_current_app_user_id();
+
+  select role into v_role from app_user where id = v_app_user_id;
+  if v_role = 'technician' then
+    raise exception 'rpc_closeout_set_rework_cause: rework_cause is office-only (PRD §6)';
+  end if;
+
+  update job_closeout
+  set rework_cause = p_rework_cause, rework_cause_set_by = v_app_user_id
+  where job_id = p_job_id
+  returning id, rework_cause, rework_cause_set_by into v_row;
+
+  if not found then
+    return jsonb_build_object('kind', 'not_found');
+  end if;
+
+  return jsonb_build_object(
+    'kind', 'ok', 'id', v_row.id, 'rework_cause', v_row.rework_cause, 'rework_cause_set_by', v_row.rework_cause_set_by
+  );
+end;
+$$;
+
+comment on function rpc_closeout_set_rework_cause(uuid, text) is
+  '§6 Step 5. SECURITY INVOKER — RLS on job_closeout is what actually '
+  'restricts this; fn_current_app_user_id() (SECURITY DEFINER) resolves the '
+  'attribution the same way every other RPC in this file does, so this '
+  'function does not need to be one itself.';
+
+revoke execute on function rpc_closeout_set_rework_cause(uuid, text) from public;
+grant execute on function rpc_closeout_set_rework_cause(uuid, text) to authenticated;
+
+-- ============================================================================
+-- End of the §6 Step 5 additions (rpc_job_complete,
+-- rpc_closeout_set_rework_cause). apps/web's office job-detail page
+-- (dispatch, checklist, execution steps, test results, complete, closeout,
+-- rework-cause) now has an RPC for every write it makes except photo upload
+-- (binary bytes; stays a Fastify route, same as REF PDF generation and
+-- Veryfi OCR — structurally can't be an RPC, §4).
 -- ============================================================================

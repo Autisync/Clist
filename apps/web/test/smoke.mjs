@@ -259,11 +259,30 @@ async function main() {
   if (createJob.status === 201 && jobId) ok("create-job through proxy");
   else fail("create-job through proxy", `status ${createJob.status} ${JSON.stringify(createJob.json)}`);
 
+  // §6 Step 5: /office/jobs/:id is now Supabase-native (reads job/client/
+  // v_job_readiness/job_checklist_item straight from Supabase, no Fastify
+  // in the path — see apps/api/README.md's job-detail-cutover section).
+  // `jobId` above came from the classic Fastify system instead (the
+  // fastify_api Postgres schema apps/api/src/db.ts owns, per the real-
+  // Postgres swap) — a genuinely different backing store than Supabase's
+  // `public` schema job-detail now reads from exclusively. A 404 here is
+  // therefore the CORRECT outcome, not a bug: this session (`office`, a
+  // plain fr_session cookie from the classic /api/auth/office/login route)
+  // never becomes a real Supabase session, so it has no way to prove real
+  // Supabase-backed content renders — this script isn't a real browser
+  // engine and can't execute the login page's client-side
+  // signInWithPassword() call (its own header comment already says so).
+  // Proving job-detail's Supabase reads work for real is done by
+  // apps/api/README.md's job-detail-cutover section (RPC-level verify
+  // scripts + a real interactive browser walkthrough), not here.
   const jobDetailPage = await office.get(WEB_BASE, `/office/jobs/${jobId}`);
-  if (jobDetailPage.status === 200 && createJob.json?.code && jobDetailPage.text.includes(createJob.json.code)) {
-    ok("GET /office/jobs/:id renders the real job code — server-rendered from live API data");
+  if (jobDetailPage.status === 404) {
+    ok("GET /office/jobs/:id 404s for a job that only exists in the classic Fastify system (correct — Supabase-native now, different backing store)");
   } else {
-    fail("job detail page renders real data", `status ${jobDetailPage.status}`);
+    fail(
+      "job detail page 404s for a Fastify-only job id",
+      `status ${jobDetailPage.status} (expected 404 — see this check's own comment for why)`
+    );
   }
 
   // ---- 3. Technician pairing + PIN login through the proxy ---------------

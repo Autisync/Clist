@@ -4,16 +4,32 @@
  * Job header + 3-stage tab shell + all three tabs' full implementation.
  * Tab structure/interaction ported from fieldready-prototype.jsx's
  * <JobDetail>/<Execution>/<AAR> (stage state, tab row, banner + section
- * layout, the CAUSES taxonomy) per CLAUDE.md — wired to real fetch calls
- * instead of the prototype's mock `onUpdate`/local-only state.
+ * layout, the CAUSES taxonomy) per CLAUDE.md — wired to real writes instead
+ * of the prototype's mock `onUpdate`/local-only state.
  *
- * Execução and After-action report have no GET route to hydrate prior
- * state from (no GET for job_execution_step_completion, job_photo, or
- * job_test_result rows — checked apps/api/src/routes/jobs.ts and sync.ts)
- * — so, like the prototype itself, both tabs start from an empty/untouched
- * local state and fill in as the office user works through them in this
- * session; job.status/completed_at (which the office user's earlier GET
- * /jobs/:id call already returned) is used to detect "this job already
+ * §6 Step 5: every write below except photo upload now goes straight to
+ * Supabase — supabase.rpc(...) for everything with an atomicity/
+ * idempotency concern (checklist toggle -> rpc_checklist_item_update,
+ * dispatch -> rpc_dispatch_job, execution step -> rpc_execution_step_complete,
+ * test result -> rpc_test_result_record, complete -> rpc_job_complete,
+ * closeout -> rpc_closeout_submit, rework-cause -> rpc_closeout_set_rework_cause
+ * — the last two new to this slice, apps/api/supabase/rpc.sql) instead of
+ * Fastify's PATCH/POST routes through the /api/* proxy. Each RPC returns a
+ * jsonb `{kind: ...}` or `{status: ...}` result on success (even for what
+ * used to be a 404/409) rather than throwing — `error` on the returned
+ * `{data, error}` pair is reserved for an actual Postgres exception (missing
+ * tenant context, an invalid enum value), so every branch below checks
+ * `data.kind`/`data.status` first, `error` second, matching how these RPCs
+ * are proven in apps/api/supabase/verify-*.mjs. Photo upload alone still
+ * calls Fastify via uploadPhoto/apiFetch (binary bytes, no Supabase Storage
+ * wiring in this slice — see page.tsx's comment).
+ *
+ * Execução and After-action report have no read path to hydrate prior state
+ * from (no query here for job_execution_step_completion, job_photo, or
+ * job_test_result rows) — so, like the prototype itself, both tabs start
+ * from an empty/untouched local state and fill in as the office user works
+ * through them in this session; job.status/completed_at (already returned
+ * by page.tsx's Server Component read) is used to detect "this job already
  * passed this stage in an earlier session" and skip straight to the right
  * sub-state (e.g. show the close-out form immediately if completed_at is
  * already set) rather than re-showing controls that would just re-run
@@ -32,7 +48,8 @@ import {
   Clock,
   MinusCircle,
 } from "lucide-react";
-import { apiFetch, ApiError, uploadPhoto } from "@/lib/api";
+import { uploadPhoto } from "@/lib/api";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { Pill, jobStatusLabel, type PillTone } from "../../../_components/pill";
 import type { ChecklistItem, Readiness, ExecutionSnapshot, TestProtocolSnapshot, TestProtocolTest } from "../page";
 
@@ -168,10 +185,25 @@ export function JobDetail({
     setTogglingId(item.id);
     setDispatchOk(false);
     try {
-      await apiFetch(`/jobs/${job.id}/checklist/${item.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status: nextStatus }),
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc("rpc_checklist_item_update", {
+        p_client_mutation_id: crypto.randomUUID(),
+        p_job_id: job.id,
+        p_item_id: item.id,
+        p_status: nextStatus,
       });
+      if (error) throw error;
+      // Checking data.reason rather than data.status === "rejected": every
+      // RPC's idempotency-replay branch (apps/api/supabase/rpc.sql) merges
+      // {status: "already_applied"} on TOP of the originally-stored result,
+      // which overwrites status but leaves the original "reason" key
+      // (present only on a rejection) untouched — so a replayed mutation
+      // whose first attempt was actually rejected would come back looking
+      // like a success if this only checked status. Never actually reached
+      // today (a fresh crypto.randomUUID() per call means client_mutation_id
+      // is never reused here), but the check should be correct regardless
+      // of whether a future caller ever does retry with the same id.
+      if (data.reason) throw new Error(data.reason);
       setItems((prev) =>
         prev.map((c) => (c.id === item.id ? { ...c, status: nextStatus } : c))
       );
@@ -188,26 +220,32 @@ export function JobDetail({
     setBlocking(null);
     setDispatchOk(false);
     try {
-      await apiFetch(`/jobs/${job.id}/dispatch`, { method: "POST" });
-      setStatus("dispatched");
-      setDispatchOk(true);
-      setStage("exec");
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        const body = err.body as
-          | { error: "not_ready"; blocking: DispatchBlocking[] }
-          | { error: "wrong_status"; status: string };
-        if (body.error === "not_ready") {
-          setBlocking(body.blocking);
-        } else {
-          setDispatchError(
-            `Este trabalho já avançou para o estado "${jobStatusLabel(body.status).label}" — não pode ser despachado novamente.`
-          );
-          setStatus(body.status);
-        }
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc("rpc_dispatch_job", { p_job_id: job.id });
+      if (error) throw error;
+
+      const result = data as
+        | { kind: "ok" }
+        | { kind: "not_ready"; blocking: DispatchBlocking[] }
+        | { kind: "wrong_status"; status: string }
+        | { kind: "not_found" };
+
+      if (result.kind === "ok") {
+        setStatus("dispatched");
+        setDispatchOk(true);
+        setStage("exec");
+      } else if (result.kind === "not_ready") {
+        setBlocking(result.blocking);
+      } else if (result.kind === "wrong_status") {
+        setDispatchError(
+          `Este trabalho já avançou para o estado "${jobStatusLabel(result.status).label}" — não pode ser despachado novamente.`
+        );
+        setStatus(result.status);
       } else {
         setDispatchError("Não foi possível despachar o trabalho. Tente novamente.");
       }
+    } catch {
+      setDispatchError("Não foi possível despachar o trabalho. Tente novamente.");
     } finally {
       setDispatching(false);
     }
@@ -567,7 +605,24 @@ function ExecutionTab({
     setPendingOrder(order);
     setError(null);
     try {
-      await apiFetch(`/jobs/${jobId}/execution-steps/${order}/complete`, { method: "POST" });
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc("rpc_execution_step_complete", {
+        p_client_mutation_id: crypto.randomUUID(),
+        p_job_id: jobId,
+        p_step: order,
+      });
+      if (error) throw error;
+      // Checking data.reason rather than data.status === "rejected": every
+      // RPC's idempotency-replay branch (apps/api/supabase/rpc.sql) merges
+      // {status: "already_applied"} on TOP of the originally-stored result,
+      // which overwrites status but leaves the original "reason" key
+      // (present only on a rejection) untouched — so a replayed mutation
+      // whose first attempt was actually rejected would come back looking
+      // like a success if this only checked status. Never actually reached
+      // today (a fresh crypto.randomUUID() per call means client_mutation_id
+      // is never reused here), but the check should be correct regardless
+      // of whether a future caller ever does retry with the same id.
+      if (data.reason) throw new Error(data.reason);
       setCompleted((prev) => new Set(prev).add(order));
     } catch {
       setError("Não foi possível marcar este passo. Tente novamente.");
@@ -735,17 +790,39 @@ function AARTab({
     const key = cellKey(outlet, test.id);
     setCells((prev) => ({ ...prev, [key]: { value, outcome: prev[key]?.outcome ?? null, saving: true } }));
     try {
-      const row = await apiFetch<{ outcome: TestOutcome }>(`/jobs/${jobId}/test-results`, {
-        method: "POST",
-        body: JSON.stringify({
-          network_type: testProtocolSnapshot!.network_type,
-          location_label: outlet,
-          test_code: test.id,
-          measured_value: value,
-          capture_source: "manual",
-        }),
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc("rpc_test_result_record", {
+        p_client_mutation_id: crypto.randomUUID(),
+        p_job_id: jobId,
+        p_network_type: testProtocolSnapshot!.network_type,
+        p_location_label: outlet,
+        p_test_code: test.id,
+        p_measured_value: value,
+        // Filled from the frozen snapshot's own test entry (already in
+        // hand here) rather than left null — the Fastify-era UI never sent
+        // these, leaving unit/limit_ref null on every job_test_result row
+        // even though the data was always available client-side; a real,
+        // free improvement while this call is already being rewritten, not
+        // a behavior change anything downstream depends on the old gap for.
+        p_unit: test.unit ?? null,
+        p_limit_ref: test.limit_ref ?? null,
+        p_capture_source: "manual",
+        p_raw_capture_file: null,
+        p_instrument_id: null,
       });
-      setCells((prev) => ({ ...prev, [key]: { value, outcome: row.outcome, saving: false } }));
+      if (error) throw error;
+      // Checking data.reason rather than data.status === "rejected": every
+      // RPC's idempotency-replay branch (apps/api/supabase/rpc.sql) merges
+      // {status: "already_applied"} on TOP of the originally-stored result,
+      // which overwrites status but leaves the original "reason" key
+      // (present only on a rejection) untouched — so a replayed mutation
+      // whose first attempt was actually rejected would come back looking
+      // like a success if this only checked status. Never actually reached
+      // today (a fresh crypto.randomUUID() per call means client_mutation_id
+      // is never reused here), but the check should be correct regardless
+      // of whether a future caller ever does retry with the same id.
+      if (data.reason) throw new Error(data.reason);
+      setCells((prev) => ({ ...prev, [key]: { value, outcome: data.outcome as TestOutcome, saving: false } }));
     } catch {
       setCells((prev) => ({ ...prev, [key]: { value, outcome: prev[key]?.outcome ?? null, saving: false } }));
     }
@@ -755,15 +832,25 @@ function AARTab({
     setCompleting(true);
     setCompleteError(null);
     try {
-      const row = await apiFetch<{ status: string }>(`/jobs/${jobId}/complete`, { method: "POST" });
-      setCompleted(true);
-      onStatusChange(row.status);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc("rpc_job_complete", { p_job_id: jobId });
+      if (error) throw error;
+
+      const result = data as
+        | { kind: "ok"; status: string }
+        | { kind: "conflict"; status: string; completed_at: string | null }
+        | { kind: "not_found" };
+
+      if (result.kind === "ok") {
+        setCompleted(true);
+        onStatusChange(result.status);
+      } else if (result.kind === "conflict") {
         setCompleteError("Este trabalho já foi concluído, ou não está num estado que permita concluir.");
       } else {
         setCompleteError("Não foi possível concluir o trabalho. Tente novamente.");
       }
+    } catch {
+      setCompleteError("Não foi possível concluir o trabalho. Tente novamente.");
     } finally {
       setCompleting(false);
     }
@@ -774,13 +861,27 @@ function AARTab({
     setSubmittingCloseout(true);
     setCloseoutError(null);
     try {
-      await apiFetch(`/jobs/${jobId}/closeout`, {
-        method: "POST",
-        body: JSON.stringify({
-          first_time_fix: firstTimeFix === "yes",
-          technician_note_transcript: noteTranscript.trim(),
-        }),
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc("rpc_closeout_submit", {
+        p_client_mutation_id: crypto.randomUUID(),
+        p_job_id: jobId,
+        p_first_time_fix: firstTimeFix === "yes",
+        p_technician_voice_note_file: null,
+        p_technician_note_transcript: noteTranscript.trim(),
+        p_client_signature_file: null,
       });
+      if (error) throw error;
+      // Checking data.reason rather than data.status === "rejected": every
+      // RPC's idempotency-replay branch (apps/api/supabase/rpc.sql) merges
+      // {status: "already_applied"} on TOP of the originally-stored result,
+      // which overwrites status but leaves the original "reason" key
+      // (present only on a rejection) untouched — so a replayed mutation
+      // whose first attempt was actually rejected would come back looking
+      // like a success if this only checked status. Never actually reached
+      // today (a fresh crypto.randomUUID() per call means client_mutation_id
+      // is never reused here), but the check should be correct regardless
+      // of whether a future caller ever does retry with the same id.
+      if (data.reason) throw new Error(data.reason);
       setCloseoutSubmitted(true);
       onStatusChange("closed");
     } catch {
@@ -795,10 +896,13 @@ function AARTab({
     setCauseError(null);
     setCauseSaved(false);
     try {
-      await apiFetch(`/jobs/${jobId}/closeout/rework-cause`, {
-        method: "PATCH",
-        body: JSON.stringify({ rework_cause: reworkCause }),
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc("rpc_closeout_set_rework_cause", {
+        p_job_id: jobId,
+        p_rework_cause: reworkCause,
       });
+      if (error) throw error;
+      if (data.kind !== "ok") throw new Error(data.kind);
       setCauseSaved(true);
     } catch {
       setCauseError("Não foi possível guardar a causa-raiz. Tente novamente.");
