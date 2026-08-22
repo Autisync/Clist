@@ -1,0 +1,76 @@
+# Portainer Stack definition for apps/api — the self-hosted-VPS equivalent
+# of render.yaml (same Dockerfile, same required env vars, same persistent-
+# disk caveat for the object store — see apps/api/HOSTING.md for the full
+# reasoning behind every one of those, none of it is repeated here).
+#
+# Two ways to deploy this with Portainer:
+#   1. Git-based stack (recommended, mirrors how Render reads render.yaml):
+#      Portainer -> Stacks -> Add stack -> Repository -> point at this
+#      repo/branch, Compose path: portainer-stack.yml. Portainer clones the
+#      whole repo, so the build context below (".") correctly resolves to
+#      the repo root -- required, same reason apps/api/Dockerfile's own
+#      header comment gives (it reads 03-schema.sql/seed.sql from the repo
+#      root, and this is an npm-workspaces monorepo).
+#   2. Web editor: paste this file's contents into Portainer's stack editor
+#      -- only works if Portainer is building on a machine that already has
+#      this repo checked out at the path Portainer runs `docker build`
+#      from, since a pasted-in compose file has no repo of its own to
+#      clone. Prefer option 1 unless you have a specific reason not to.
+#
+# Either way, Portainer's own "Environment variables" section (shown when
+# creating/editing the stack) is where you fill in the five values below --
+# never commit real values into this file. Same values as Render's
+# Blueprint prompts for for; see apps/api/HOSTING.md's env var table for
+# what each one is.
+
+services:
+  fieldready-api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3001:3001" # put your own reverse proxy (nginx/Caddy/Traefik) in
+      # front of this for a real domain + TLS -- Portainer doesn't set
+      # that up for you, same as Render handled it for you and a bare VPS
+      # doesn't.
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3001
+      - FIELDREADY_RUNTIME_DIR=/data
+      # Bare `- NAME` (no value) pulls from Portainer's own "Environment
+      # variables" section for this stack, not from anything committed
+      # here -- fill these in there, the same five values Render's
+      # Blueprint prompts for.
+      - SUPABASE_PROJECT_REF
+      - SUPABASE_DB_PASSWORD
+      - SUPABASE_DB_POOLER_HOST
+      - SUPABASE_SERVICE_ROLE_KEY
+      - SUPABASE_ANON_KEY
+      # A real random value, not a guessable string -- generate one
+      # yourself (e.g. `openssl rand -hex 32`) and set it in Portainer's
+      # env vars, the same way Render's Blueprint generates one for you
+      # instead of asking.
+      - SESSION_JWT_SECRET
+      # Optional -- all four unset keeps using the deterministic fixture
+      # OCR provider (apps/api/.env.example's own comment on this).
+      - VERYFI_CLIENT_ID
+      - VERYFI_CLIENT_SECRET
+      - VERYFI_USERNAME
+      - VERYFI_API_KEY
+    volumes:
+      - fieldready-api-objects:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  fieldready-api-objects:
+    # Photos + generated REF PDFs -- same single-instance-only limitation
+    # apps/api/HOSTING.md's §3 already documents for Render's disk: this
+    # survives container restarts/redeploys, but a real S3/R2 swap
+    # (object-store.ts's own comment) is still the eventual real fix, not
+    # attempted here either.

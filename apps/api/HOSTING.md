@@ -119,6 +119,41 @@ hand-written `fly.toml` (not included here) and `flyctl launch` /
 `flyctl deploy` instead of this repo's one-file Blueprint — reach for this
 if Render's regions or pricing shape don't fit, not as a default.
 
+## Self-hosting: Portainer on your own VPS
+
+Not a managed platform like Render/Fly.io — Portainer is a web UI for
+managing Docker containers on a server you already provision and maintain
+yourself (OS updates, security patches, a reverse proxy for TLS/your own
+domain — none of that is Portainer's job, unlike Render/Fly.io which
+handle it for you). If you already have a VPS with Portainer running,
+**[`portainer-stack.yml`](../portainer-stack.yml)** at the repo root is the
+same deployment as `render.yaml`, in Docker Compose form — same
+`Dockerfile`, same required env vars, same persistent-volume caveat for
+the object store (§3 above). Built and run locally with real `docker
+compose` before writing this doc line, not assumed: it built, started,
+reported `(healthy)` on Docker's own healthcheck, and answered `/health`
+from outside the container exactly like the plain `docker run` test
+earlier in this doc did.
+
+To deploy it:
+
+1. Portainer → **Stacks** → **Add stack** → **Repository**, point at this
+   repo/branch, Compose path: `portainer-stack.yml`. (A pasted-in "Web
+   editor" stack only works if Portainer is building on a machine that
+   already has this repo checked out where it runs `docker build` from —
+   prefer the Git-repository method.)
+2. In the stack's **Environment variables** section, fill in the same five
+   Supabase values Render's Blueprint prompts for (see the table below),
+   plus a real random `SESSION_JWT_SECRET` (Render's Blueprint generates
+   one for you; here you generate it yourself — `openssl rand -hex 32` —
+   and paste it in, since Portainer has no equivalent auto-generate
+   button).
+3. Deploy the stack. Put your own reverse proxy (nginx/Caddy/Traefik) in
+   front of the container's published port for a real domain + TLS —
+   Portainer doesn't set that up for you the way Render does.
+4. Point `apps/web`'s `FIELDREADY_API_ORIGIN` at whatever public URL your
+   reverse proxy serves.
+
 ## Required environment variables
 
 | Variable | Notes |

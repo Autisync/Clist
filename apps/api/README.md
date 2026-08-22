@@ -1066,8 +1066,10 @@ slice; out of scope for this one.
 
 Full rundown in **[`HOSTING.md`](HOSTING.md)** (recommendation, required
 env vars, a ready-to-use Render Blueprint at the repo root's
-[`render.yaml`](../render.yaml), and `Dockerfile`) — everything in it was
-actually built and run, not assumed: a real `docker build`, run locally,
+[`render.yaml`](../render.yaml), a Portainer/self-hosted-VPS equivalent at
+[`portainer-stack.yml`](../portainer-stack.yml), and `Dockerfile`) —
+everything in it was actually built and run, not assumed: a real
+`docker build`, run locally,
 walked through a complete real HTTP flow from *outside* the container
 (office login → jobs list → REF document creation → Playwright PDF
 generation, confirmed on disk as a real 31KB `%PDF-1.4` file) against the
