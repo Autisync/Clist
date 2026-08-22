@@ -25,6 +25,17 @@ export type DispatchGateResult =
   | { ok: true }
   | { ok: false; blocking: DispatchBlockingReason[] };
 
+// Normalizes whatever a Postgres driver hands back for a `date` column —
+// PGlite (like most drivers) parses it into a JS Date object, not a plain
+// string, contrary to what this file used to assume — into a real
+// 'YYYY-MM-DD' string. A date-only string parses as UTC midnight per the
+// ECMAScript date-string spec, so slicing toISOString() is timezone-safe
+// regardless of which shape the driver actually returned.
+function toIsoDate(value: string | Date | null): string | null {
+  if (value === null) return null;
+  return value instanceof Date ? value.toISOString().slice(0, 10) : value.slice(0, 10);
+}
+
 /**
  * Evaluates the dispatch gate for `jobId`. Queries the job row, its
  * checklist rows, the tenant's most recent van_audit, the tenant's
@@ -122,7 +133,7 @@ export async function evaluateDispatchGate(
     const equipmentRows = await tx.query<{
       id: string;
       kind: string;
-      calibration_expires_on: string | null;
+      calibration_expires_on: string | Date | null;
     }>(
       `select id, kind, calibration_expires_on from equipment where id = any($1::uuid[]);`,
       [instrumentIds]
@@ -130,10 +141,25 @@ export async function evaluateDispatchGate(
     const byId = new Map(equipmentRows.rows.map((r) => [r.id, r]));
     for (const instrumentId of instrumentIds) {
       const eq = byId.get(instrumentId);
-      const expiresOn = eq?.calibration_expires_on ?? null;
-      // Dates come back from PGlite as 'YYYY-MM-DD' strings (ISO-8601),
-      // so lexicographic comparison against today's ISO date is exact --
-      // no timezone-sensitive Date parsing needed.
+      // Review finding, confirmed against a real table column (not
+      // assumed from reading the driver's own claimed types): PGlite (like
+      // most Postgres drivers) parses `date` columns into JS Date objects,
+      // not plain strings -- this comment used to claim the opposite.
+      // Comparing a Date object to a string via `<` coerces the Date
+      // through its default toString() (a locale-formatted string like
+      // "Fri Aug 21 2026 ..."), NOT toISOString() -- so the lexicographic
+      // comparison this function relied on never actually worked. Verified
+      // directly: it returned false for BOTH an expired (2020) and a
+      // not-yet-expired (2099) calibration date, meaning dispatch never
+      // actually blocked on expired equipment since this condition was
+      // written -- a real, silent gap in a compliance-relevant gate,
+      // caught only while porting this logic to Supabase's rpc_dispatch_job
+      // (a pure-SQL date comparison there, with no JS coercion pitfall to
+      // hit) and finding the two implementations disagreed. Fixed by
+      // normalizing whatever the driver hands back to a real 'YYYY-MM-DD'
+      // string before comparing either side, instead of trusting `<` to
+      // do the right thing with mixed types.
+      const expiresOn = toIsoDate(eq?.calibration_expires_on ?? null);
       const todayIso = new Date().toISOString().slice(0, 10);
       const expired = !eq || expiresOn === null || expiresOn < todayIso;
       if (expired) {

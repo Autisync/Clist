@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { PGlite } from "@electric-sql/pglite";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../");
@@ -436,13 +437,73 @@ async function main() {
   }
   ok(`checklist: office direct PATCH marks ${nonJobItems.length} van/office-scope item(s) ok`);
 
-  // Equipment calibration (condition c): the resolved test_protocol_snapshot
-  // above carries no instrument_id on any test entry (TestProtocolTest has
-  // no such field, per packages/core/src/template.ts, and dispatch-gate.ts
-  // treats that as vacuously satisfied) — the "not needing any per the
-  // job's protocol" branch this task's own instructions call out, so no
-  // equipment/calibration setup is exercised here.
-  note("dispatch: calibration condition is vacuously satisfied — this job's test_protocol_snapshot references no instrument_id");
+  // Equipment calibration (condition c) — a real, non-vacuous test. A prior
+  // pass left this "vacuously satisfied" (no equipment/calibration setup at
+  // all), which never actually exercised dispatch-gate.ts's calibration
+  // comparison — and that comparison turned out to have a real bug (found
+  // while porting this logic to Supabase's rpc_dispatch_json, a pure-SQL
+  // date comparison there with no JS coercion pitfall to hit): PGlite (like
+  // most Postgres drivers) returns `date` columns as JS Date objects, not
+  // plain strings, and comparing a Date object to a string via `<` coerces
+  // the Date through toString() (a locale string), not toISOString() — so
+  // the old lexicographic comparison never actually detected an expired
+  // instrument, for any date. Fixed in dispatch-gate.ts (toIsoDate()); this
+  // is the check that would have caught it, added now instead of only
+  // noting the gap.
+  //
+  // test_protocol_snapshot has no HTTP write path (architecture §5:
+  // "resolved once, never re-read/rewritten") — injecting an instrument_id
+  // into one already-frozen test entry needs the same direct-PGlite-access
+  // pattern this file's own SIGKILL tests already use elsewhere, not a new
+  // one invented for this. Equipment creation and calibration DO have real
+  // routes (POST /equipment, POST /equipment/:id/calibration), so only the
+  // snapshot injection needs direct DB access.
+
+  const equipmentCreate = await officeA.post("/equipment", { kind: "Medidor de campo DVB-T2", supports_export: false });
+  const equipmentId = equipmentCreate.json?.id;
+  if (equipmentCreate.status === 201 && equipmentId) ok("equipment: created via POST /equipment");
+  else fail("equipment: created via POST /equipment", `status ${equipmentCreate.status} ${JSON.stringify(equipmentCreate.json)}`);
+
+  const expiredCalibration = await officeA.post(`/equipment/${equipmentId}/calibration`, {
+    cert_file: "cert-expired.pdf", issued_on: "2019-01-01", expires_on: "2020-01-01",
+  });
+  if (expiredCalibration.status === 200 && expiredCalibration.json?.calibration_expires_on) {
+    ok("equipment: calibration recorded via POST /equipment/:id/calibration (already expired: 2020-01-01)");
+  } else {
+    fail("equipment: calibration recorded (expired)", `status ${expiredCalibration.status} ${JSON.stringify(expiredCalibration.json)}`);
+  }
+
+  await killServerHard();
+  ok("server killed (SIGKILL) before direct DB access — never two processes on the same PGlite data dir at once");
+  {
+    const dataDir = path.join(RUNTIME_DIR, "pglite");
+    const directDb = new PGlite(dataDir);
+    const jobRow = await directDb.query(`select test_protocol_snapshot from job where id = $1;`, [jobId]);
+    const snapshot = jobRow.rows[0].test_protocol_snapshot;
+    snapshot.tests[0].instrument_id = equipmentId;
+    await directDb.query(`update job set test_protocol_snapshot = $1 where id = $2;`, [JSON.stringify(snapshot), jobId]);
+    await directDb.close();
+  }
+  ok("direct-db: instrument_id injected into the job's frozen test_protocol_snapshot (no HTTP route exists for this, by design)");
+  serverProc = await spawnServer();
+  await waitForHealth();
+  ok("server restarted and reconnected to the same PGlite data directory");
+
+  const blockedByCalibration = await officeA.post(`/jobs/${jobId}/dispatch`);
+  const calibrationBlocking = (blockedByCalibration.json?.blocking ?? []).find(
+    (b) => b.kind === "calibration_expired" && b.equipment_id === equipmentId
+  );
+  if (blockedByCalibration.status === 409 && calibrationBlocking) {
+    ok(`dispatch: blocked with calibration_expired for the real expired instrument (expired_on=${calibrationBlocking.expired_on})`);
+  } else {
+    fail("dispatch: blocked by expired calibration", `status ${blockedByCalibration.status} ${JSON.stringify(blockedByCalibration.json)}`);
+  }
+
+  const renewedCalibration = await officeA.post(`/equipment/${equipmentId}/calibration`, {
+    cert_file: "cert-valid.pdf", issued_on: "2026-01-01", expires_on: "2099-01-01",
+  });
+  if (renewedCalibration.status === 200) ok("equipment: calibration renewed to a future date (2099-01-01)");
+  else fail("equipment: calibration renewed", `status ${renewedCalibration.status}`);
 
   // Condition (d): tenant is 'ited_ready' (non-basic), so ited_classification
   // must have been explicitly reviewed by a human (ited_classification_by
