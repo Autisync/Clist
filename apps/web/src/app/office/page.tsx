@@ -32,9 +32,9 @@ import {
   TrendingDown,
   Info,
 } from "lucide-react";
-import { serverApiFetch, ApiError } from "@/lib/api";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Pill, jobStatusLabel, type PillTone } from "./_components/pill";
-import { FastifyUnavailable } from "./_components/fastify-unavailable";
+import { loadPriceAlerts, loadRecommendedActions } from "@/lib/dashboard";
 
 type Job = {
   id: string;
@@ -175,48 +175,85 @@ function Section({
   );
 }
 
+// §6 Step 5: the six /dashboard/* + /jobs + /clients Fastify calls this
+// page used to make are now direct Supabase reads — the four v_* views
+// each a plain `.from(...)` (API spec §8's own "if a number needs to
+// change, it changes in 03-schema.sql, not in two places" still holds,
+// just read via PostgREST instead of a Fastify route over the same views),
+// price-alerts/recommended-actions ported to @/lib/dashboard (the one real
+// application logic this page depends on — see that file's own comment).
+// Per-job readiness is now one batched `.in(...)` query instead of an
+// N+1 loop of serverApiFetch calls, the same real improvement
+// office/jobs/page.tsx's own cutover already made.
 export default async function DashboardPage() {
-  try {
-    return await renderDashboard();
-  } catch (err) {
-    if (err instanceof ApiError) return <FastifyUnavailable pageLabel="O dashboard" />;
-    throw err;
-  }
-}
+  const supabase = await createSupabaseServerClient();
 
-async function renderDashboard() {
+  const monthsWindow = 6;
+  const now = new Date();
+  const monthsBoundary = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (monthsWindow - 1), 1));
+
   const [
-    { jobs },
-    { clients },
-    ffrResult,
-    hoursResult,
-    correlationResult,
-    priceAlertsResult,
-    actionsResult,
+    { data: jobsData, error: jobsError },
+    { data: clientsData, error: clientsError },
+    { data: ffrData, error: ffrError },
+    { data: hoursData, error: hoursError },
+    { data: correlationData, error: correlationError },
   ] = await Promise.all([
-    serverApiFetch<{ jobs: Job[] }>("/jobs"),
-    serverApiFetch<{ clients: Client[] }>("/clients"),
-    serverApiFetch<{ months: FfrMonth[] }>("/dashboard/first-time-fix-rate?months=6"),
-    serverApiFetch<{ by_job_type: HoursVarianceRow[] }>("/dashboard/hours-variance?by=job_type"),
-    serverApiFetch<{ buckets: ReadinessBucket[] }>("/dashboard/readiness-correlation"),
-    serverApiFetch<{ alerts: PriceAlert[] }>("/dashboard/price-alerts"),
-    serverApiFetch<{ actions: RecommendedAction[] }>("/dashboard/recommended-actions"),
+    supabase
+      .from("job")
+      .select("id, client_id, code, title, address, job_type, scheduled_at, quoted_hours, quoted_materials, assigned_to, status, created_at"),
+    supabase.from("client").select("id, name"),
+    supabase
+      .from("v_first_time_fix_rate")
+      .select("month, jobs_closed, first_time_fixes, ffr_pct")
+      .gte("month", monthsBoundary.toISOString())
+      .order("month", { ascending: true }),
+    supabase
+      .from("v_hours_variance")
+      .select("job_type, n, avg_hours_delta, avg_pct_variance")
+      .order("avg_pct_variance", { ascending: false, nullsFirst: false }),
+    supabase
+      .from("v_readiness_correlation")
+      .select("readiness_bucket, jobs, rework_jobs, rework_pct")
+      .order("readiness_bucket", { ascending: true }),
   ]);
+  if (jobsError) throw jobsError;
+  if (clientsError) throw clientsError;
+  if (ffrError) throw ffrError;
+  if (hoursError) throw hoursError;
+  if (correlationError) throw correlationError;
+
+  const jobs = (jobsData ?? []) as Job[];
+  const clients = clientsData ?? [];
+  const ffrMonthsRaw = ffrData ?? [];
+  const byTypeRaw = (hoursData ?? []) as HoursVarianceRow[];
+  // Same defensive coercion Readiness's own type comment already documents
+  // for this exact class of issue: PostgREST/pg can hand back a view's
+  // aggregate counts as numeric strings — the old Fastify route's num()
+  // helper guaranteed real numbers before this page ever saw them; reading
+  // the view directly means this page now has to do that itself.
+  const correlationBuckets: ReadinessBucket[] = (correlationData ?? []).map((b) => ({
+    readiness_bucket: b.readiness_bucket,
+    jobs: b.jobs === null ? null : Number(b.jobs),
+    rework_jobs: b.rework_jobs === null ? null : Number(b.rework_jobs),
+    rework_pct: b.rework_pct === null ? null : Number(b.rework_pct),
+  }));
+
+  const alerts = await loadPriceAlerts(supabase);
+  const actions = await loadRecommendedActions(supabase, correlationBuckets, byTypeRaw, alerts);
 
   const clientName = new Map(clients.map((c) => [c.id, c.name]));
 
   const activeJobs = jobs.filter((j) => READINESS_RELEVANT.has(j.status));
-  const readinessEntries = await Promise.all(
-    activeJobs.map(async (j) => {
-      try {
-        const r = await serverApiFetch<Readiness>(`/jobs/${j.id}/readiness`);
-        return [j.id, r] as const;
-      } catch {
-        return [j.id, null] as const;
-      }
-    })
-  );
-  const readinessByJob = new Map(readinessEntries);
+  const readinessByJob = new Map<string, Readiness>();
+  if (activeJobs.length > 0) {
+    const { data: readinessRows, error: readinessError } = await supabase
+      .from("v_job_readiness")
+      .select("*")
+      .in("job_id", activeJobs.map((j) => j.id));
+    if (readinessError) throw readinessError;
+    for (const r of readinessRows ?? []) readinessByJob.set(r.job_id, r as Readiness);
+  }
 
   // "cleared" mirrors jobs/page.tsx exactly: mandatory_ok === mandatory_total
   // handles the zero-mandatory-items case correctly too (0 === 0 → cleared),
@@ -243,7 +280,12 @@ async function renderDashboard() {
 
   // Overall FFR across the window: sum, not average-of-averages, so a
   // sparse month doesn't get equal weight to a busy one.
-  const ffrMonths = ffrResult.months;
+  const ffrMonths: FfrMonth[] = ffrMonthsRaw.map((m) => ({
+    month: m.month,
+    jobs_closed: m.jobs_closed === null ? null : Number(m.jobs_closed),
+    first_time_fixes: m.first_time_fixes === null ? null : Number(m.first_time_fixes),
+    ffr_pct: m.ffr_pct === null ? null : Number(m.ffr_pct),
+  }));
   const totalClosed = ffrMonths.reduce((a, m) => a + (m.jobs_closed ?? 0), 0);
   const totalFirstFix = ffrMonths.reduce((a, m) => a + (m.first_time_fixes ?? 0), 0);
   const overallFfr = totalClosed > 0 ? (100 * totalFirstFix) / totalClosed : null;
@@ -256,7 +298,12 @@ async function renderDashboard() {
   // Weighted overall time variance (weighted by job count per type) — same
   // spirit as the prototype's single HISTORY-wide average, computed here
   // from the real per-job_type view instead of a flat history array.
-  const byType = hoursResult.by_job_type;
+  const byType: HoursVarianceRow[] = byTypeRaw.map((r) => ({
+    job_type: r.job_type,
+    n: r.n === null ? null : Number(r.n),
+    avg_hours_delta: r.avg_hours_delta === null ? null : Number(r.avg_hours_delta),
+    avg_pct_variance: r.avg_pct_variance === null ? null : Number(r.avg_pct_variance),
+  }));
   const totalHoursJobs = byType.reduce((a, r) => a + (r.n ?? 0), 0);
   const weightedPctVariance =
     totalHoursJobs > 0
@@ -265,11 +312,8 @@ async function renderDashboard() {
   const worstType = byType.length > 0 ? byType[0] : null;
   const maxAbsVariance = Math.max(1, ...byType.map((r) => Math.abs(r.avg_pct_variance ?? 0)));
 
-  const gated = correlationResult.buckets.find((b) => b.readiness_bucket === "gated") ?? null;
-  const ungated = correlationResult.buckets.find((b) => b.readiness_bucket === "ungated") ?? null;
-
-  const alerts = priceAlertsResult.alerts;
-  const actions = actionsResult.actions;
+  const gated = correlationBuckets.find((b) => b.readiness_bucket === "gated") ?? null;
+  const ungated = correlationBuckets.find((b) => b.readiness_bucket === "ungated") ?? null;
 
   return (
     <div className="space-y-5">

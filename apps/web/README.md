@@ -37,17 +37,33 @@ data systems currently coexist on purpose, per
   Storage wiring yet — same "structurally can't be an RPC" reasoning as REF
   PDF generation and Veryfi OCR). Provisioning a real tenant + office login
   (no self-serve signup exists) is `apps/api/supabase/provision-tenant.mjs`.
-- **Still entirely Fastify-backed:** clients, quotes, suppliers,
-  technicians, and the dashboard. These depend on `fr_session` for their own
-  data fetches and will 500 for a user who only has a Supabase session (no
-  Fastify session at all) — this is the honest, expected state of an
-  in-progress cutover, not a hidden regression. Each of these is a future
-  slice, same one-page-at-a-time discipline as everything above.
-- **Every RPC job detail's write actions call is already built and
-  proven** (see `apps/api/README.md`'s Supabase-native section) — porting
-  the pages above is wiring UI to RPCs that already exist and are already
-  tested, not new backend work, with the one exception (`rpc_job_complete`)
-  called out above.
+- **Also cut over to Supabase:** `/office/clients`, `/office/quotes`
+  (list/detail/new), `/office/suppliers` (price reads + manual price entry
+  — receipt upload/confirm and Google Places refresh stay Fastify, see that
+  page's own component comment), and `/office` (the Dashboard). Mostly
+  plain RLS-scoped reads/writes; four new RPCs
+  (`rpc_supplier_price_record`, `rpc_quote_create`,
+  `rpc_quote_lines_replace`, `rpc_quote_accept`) cover the writes that
+  needed atomicity or server-side attribution — see
+  `apps/api/README.md`'s own section for the full rundown, including a
+  real, foundational bug this slice found and fixed (every tenant-scoped
+  table's `tenant_id` column had no default, so a plain client-side insert
+  omitting it failed RLS outright — fixed at the schema root, not
+  per-table).
+- **Deliberately still Fastify-backed:** `/office/technicians` (device
+  pairing needs a real Supabase Auth `auth.users` row provisioned via the
+  Admin API — the "technician/device auth" migration
+  `08-supabase-native-migration.md` §2 already named as separate and more
+  novel, not folded into this slice), plus the specific suppliers actions
+  named above and job-detail's own photo upload. These depend on
+  `fr_session` and will 500 for a user who only has a Supabase session (no
+  Fastify session at all) — the honest, expected state of an in-progress
+  cutover, not a hidden regression.
+- **Every RPC these pages call is already built and proven** (see
+  `apps/api/README.md`'s Supabase-native section) — porting the pages
+  above was wiring UI to RPCs that already exist and are already tested,
+  plus the handful of genuinely new ones this slice and job-detail's own
+  slice each needed.
 
 `GET /manifest.json`, `sw.js`, and everything under `/field/*` are
 completely untouched — technician/device auth is deliberately a separate,

@@ -728,6 +728,19 @@ begin
       t
     );
     execute format('grant select, insert, update, delete on %I to authenticated', t);
+    -- §6 Step 5 fix, found empirically (a real browser insert against
+    -- `client` failed 42501 "new row violates row-level security policy"):
+    -- tenant_id had no default, so a plain client-side `.insert(...)` that
+    -- omits it (every direct, non-RPC write this migration does — RPCs
+    -- always set tenant_id explicitly server-side already, so this default
+    -- never fires for them) sends NULL for the column, and
+    -- `null = fn_current_tenant_id()` is UNKNOWN, not true, so the
+    -- WITH CHECK above rejects the row before NOT NULL even gets a chance
+    -- to. This default makes the common case (the calling session's own
+    -- tenant, the only value that could ever pass the CHECK anyway) work
+    -- without every future plain-insert write needing to know its own
+    -- tenant_id and pass it by hand.
+    execute format('alter table %I alter column tenant_id set default fn_current_tenant_id()', t);
   end loop;
 end $$;
 

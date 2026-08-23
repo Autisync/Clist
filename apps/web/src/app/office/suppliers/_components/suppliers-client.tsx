@@ -8,6 +8,14 @@
  * arrays, plus the receipt upload → review → confirm flow
  * (07-phase4-cost-intelligence.md §5's human-in-the-loop step) that the
  * prototype only faked with a canned FAKE_RECEIPT.
+ *
+ * §6 Step 5: price reads and manual price entry now go straight to
+ * Supabase (rpc_supplier_price_record — see rpc.sql's own comment for why
+ * that one needed an RPC, not a plain insert). refresh-places (external
+ * Google Places call), receipt upload (Veryfi OCR), and receipt confirm
+ * all stay Fastify-backed — none of the three can be a plain RLS-scoped
+ * write, same "structurally can't be an RPC" reasoning as REF PDF
+ * generation (08-supabase-native-migration.md §4).
  */
 
 import { useEffect, useState } from "react";
@@ -22,6 +30,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { apiFetch, uploadReceipt, ApiError } from "@/lib/api";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { Pill } from "../../_components/pill";
 import { openState } from "@/lib/sourcing";
 
@@ -108,12 +117,42 @@ export function SuppliersClient({
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirmedCount, setConfirmedCount] = useState<number | null>(null);
 
+  // §6 Step 5: reads straight from Supabase — same join GET
+  // /suppliers/:id/prices did server-side, done here via supabase-js's
+  // embedded-resource syntax instead (catalog_item(sku, name, unit) off
+  // item_id's FK), then flattened back to the item_sku/item_name/item_unit
+  // shape the rest of this component already expects, so nothing else
+  // here needs to change.
   async function loadPrices(supplierId: string) {
     setPricesLoading(true);
     try {
-      const { prices: rows } = await apiFetch<{ prices: SupplierPrice[] }>(
-        `/suppliers/${supplierId}/prices`
-      );
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase
+        .from("supplier_price")
+        .select(
+          "id, tenant_id, supplier_id, item_id, price, prev_price, source, effective_at, receipt_id, created_by, catalog_item(sku, name, unit)"
+        )
+        .eq("supplier_id", supplierId)
+        .order("catalog_item(name)", { ascending: true });
+      if (error) throw error;
+      const rows: SupplierPrice[] = (data ?? []).map((p) => {
+        const item = Array.isArray(p.catalog_item) ? p.catalog_item[0] : p.catalog_item;
+        return {
+          id: p.id,
+          tenant_id: p.tenant_id,
+          supplier_id: p.supplier_id,
+          item_id: p.item_id,
+          price: p.price,
+          prev_price: p.prev_price,
+          source: p.source,
+          effective_at: p.effective_at,
+          receipt_id: p.receipt_id,
+          created_by: p.created_by,
+          item_sku: item?.sku ?? "",
+          item_name: item?.name ?? "",
+          item_unit: item?.unit ?? "",
+        };
+      });
       setPrices(rows);
     } catch {
       setPrices([]);
@@ -160,10 +199,14 @@ export function SuppliersClient({
     setAddError(null);
     setAddSubmitting(true);
     try {
-      await apiFetch(`/suppliers/${selected.id}/prices`, {
-        method: "POST",
-        body: JSON.stringify({ item_id: addItemId, price: Number(addPrice), source: "manual" }),
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc("rpc_supplier_price_record", {
+        p_supplier_id: selected.id,
+        p_item_id: addItemId,
+        p_price: Number(addPrice),
       });
+      if (error) throw error;
+      if (data.kind !== "ok") throw new Error(data.kind);
       setAddItemId("");
       setAddPrice("");
       await loadPrices(selected.id);

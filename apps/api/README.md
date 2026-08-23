@@ -1109,3 +1109,86 @@ disk, a persistent-volume workaround for a single instance today, a real
 S3/R2 swap still future work — `src/object-store.ts`'s own comment already
 said so) honestly rather than glossing over it in the rush to get
 something hosted.
+
+## Supabase-native migration — §6 Step 5: clients/quotes/suppliers/dashboard cutover
+
+`apps/web`'s `/office/clients`, `/office/quotes` (list/detail/new),
+`/office/suppliers`, and `/office` (Dashboard) all now call Supabase
+directly instead of Fastify — most of this surface is trivial CRUD (plain
+RLS-scoped `.from(...)` reads/writes need no RPC at all, same as the job
+list/detail pages' own earlier cutover), four new RPCs cover the writes
+that genuinely needed one, and `apps/web/src/lib/dashboard.ts` ports the
+one piece of real application logic (price-alert cheapest-alternative
+lookup, recommended-actions sentence generation) that isn't a thin view
+read.
+
+**Four new RPCs**, each for the same class of reason job-detail's own two
+new RPCs needed one (`apps/api/supabase/rpc.sql`'s comments on each have
+the full reasoning):
+
+- **`rpc_supplier_price_record`** — manual price entry (`POST
+  /suppliers/:id/prices`'s `source='manual'` path). Atomic read-decide-write
+  (one current row per supplier+item, `prev_price` tracking) plus
+  server-side `created_by` attribution.
+- **`rpc_quote_create`** — `quote.created_by` is an attribution column;
+  needed server-side resolution the same as every other one in this file.
+- **`rpc_quote_lines_replace`** — atomic delete-then-reinsert for the
+  full-BOM-replace semantics `PATCH /quotes/:id/lines` already had.
+- **`rpc_quote_accept`** — the same status-guarded-transition TOCTOU shape
+  `rpc_job_complete` already closed for a different table, `FOR UPDATE`
+  and all.
+
+**Deliberately NOT ported: technician device pairing.** A first attempt at
+`rpc_technician_device_pair()` assumed pairing was a plain "insert a row
+with a hashed PIN" write — wrong, discovered empirically (a real call
+against this project failed with "column pin_hash does not exist", not
+assumed): `schema.sql`'s `technician_device` table has no `pin_hash`
+column at all — the PIN *is* the Supabase Auth password for a real
+`auth.users` row, provisioned via the Admin API (`service_role` key),
+which a plain `authenticated`-role RPC structurally cannot do (nor should
+be able to). This is exactly the "technician/device auth" migration
+`08-supabase-native-migration.md` §2 already named as deliberately
+separate and more novel — `apps/web/src/app/office/technicians` stays
+entirely Fastify-backed.
+
+**A real, foundational bug found and fixed along the way**: none of the 22
+tenant-scoped tables' `tenant_id` columns had a default. Every write this
+migration had built so far happened to be either an RPC (which always
+resolves and supplies `tenant_id` explicitly) or a raw superuser script —
+so this was invisible until the very first *plain client-side insert*
+(`NewClientForm`'s `.insert({name: ...})`, no `tenant_id` in the body) hit
+it for real: Postgres sends `NULL` for the omitted column, and
+`null = fn_current_tenant_id()` is `UNKNOWN`, not `true`, so RLS's `WITH
+CHECK` rejects the row (`42501`) before `NOT NULL` even gets a chance to.
+Fixed at the root, not per-table: the same `do $$ ... foreach t in array
+tenant_tables loop ... end loop; $$` in `schema.sql` that already applies
+RLS uniformly to all 22 tables now also sets `alter table %I alter column
+tenant_id set default fn_current_tenant_id()` for every one of them —
+purely additive (a default only fires when the column is omitted, so
+every existing RPC/script that already sets `tenant_id` explicitly is
+untouched), closing this entire class of bug for any future plain-insert
+write, not just the one that surfaced it.
+
+Also fixed, found the same way (a real frontend-shaped call, not a
+hand-crafted test): `rpc_quote_lines_replace` returned
+`{"lines":[{"jsonb_build_object":{"id":...}}]}` instead of
+`{"lines":[{"id":...}]}` — a `record`-typed loop variable receiving a
+`returning jsonb_build_object(...) into ...` gets one field named after
+the unaliased expression, so `to_jsonb()` on that record wrapped the
+already-correct value in an extra layer. Harmless for `quote-detail.tsx`
+today (it only checks `data.kind`, never reads `data.lines`), fixed anyway
+since a future caller reading the ids back would have silently gotten the
+wrong shape.
+
+**Proven, not assumed**: `apps/api/supabase/verify-suppliers-quotes-technicians.mjs`
+(new, **17/17 checks passing**, `npm run verify:sqt-supabase`) covers all
+four new RPCs plus the `tenant_id` default fix and the
+`rpc_quote_lines_replace` shape fix, each with a real regression test that
+would have failed against the pre-fix code, not just a happy-path check.
+Also verified live: a real Supabase-only browser session (provisioned and
+torn down, not committed) walked through client creation → quote create →
+lines → accept → create-job → a supplier price entry, using the exact RPC
+call shapes the frontend code makes, against the real Supabase project.
+`npm run build` (all three workspaces) and `smoke:web` (23/23, unaffected
+— it exercises the classic Fastify system directly, which this slice
+never touches) both still pass.

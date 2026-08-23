@@ -1109,3 +1109,275 @@ grant execute on function rpc_closeout_set_rework_cause(uuid, text) to authentic
 -- (binary bytes; stays a Fastify route, same as REF PDF generation and
 -- Veryfi OCR — structurally can't be an RPC, §4).
 -- ============================================================================
+
+-- ============================================================================
+-- §6 Step 5 continued: suppliers/quotes/technicians/dashboard cutover.
+-- Most of this surface is trivial CRUD (supplier/client/quote list+create,
+-- dashboard reads) — plain RLS-scoped `.from(...)` calls from apps/web need
+-- no RPC at all, same as job list/detail's own reads. Three write paths
+-- below DO need one, each for the same class of reason job-detail's two new
+-- functions did: an atomic read-decide-write sequence, or attribution that
+-- must resolve server-side, not both -- named per function.
+-- ============================================================================
+
+-- rpc_supplier_price_record: ports POST /suppliers/:id/prices
+-- (routes/suppliers.ts) -- manual price entry only (source is hard-pinned to
+-- 'manual', matching the Fastify route's own refusal of any other value).
+-- supplier_price holds one current row per (tenant, supplier, item): reading
+-- whatever is current, then overwriting it with prev_price set from what
+-- was current a moment ago, is a read-decide-write sequence a client
+-- observing it through separate .select()/.insert()/.update() calls could
+-- race exactly the way rpc_job_complete's own comment describes for a
+-- different table -- two concurrent price updates for the same
+-- (supplier, item) could both read the same "current" row and each write a
+-- prev_price that's already stale. created_by must also resolve server-side
+-- via fn_current_app_user_id(), the same reasoning
+-- rpc_closeout_set_rework_cause's own comment gives for its own attribution
+-- column -- a client-supplied value would let any caller claim any
+-- app_user id.
+--
+-- Receipt-confirmed price entry (POST /receipts/:id/confirm) is NOT ported
+-- here -- that route stays entirely Fastify-backed (Veryfi OCR credentials,
+-- §4's "structurally can't be an RPC" list), and duplicates this same
+-- update-in-place SQL inline rather than sharing a domain helper (checked:
+-- no such helper exists to begin with, so this RPC isn't diverging from one
+-- that receipts.ts also depends on).
+create or replace function rpc_supplier_price_record(
+  p_supplier_id uuid,
+  p_item_id uuid,
+  p_price numeric
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_tenant_id uuid;
+  v_app_user_id uuid;
+  v_supplier_exists boolean;
+  v_existing record;
+  v_row record;
+begin
+  v_tenant_id := fn_current_tenant_id();
+  if v_tenant_id is null then
+    raise exception 'rpc_supplier_price_record: no tenant context resolved for this session';
+  end if;
+  v_app_user_id := fn_current_app_user_id();
+
+  select exists(select 1 from supplier where id = p_supplier_id) into v_supplier_exists;
+  if not v_supplier_exists then
+    return jsonb_build_object('kind', 'supplier_not_found');
+  end if;
+
+  select id, price into v_existing
+  from supplier_price
+  where tenant_id = v_tenant_id and supplier_id = p_supplier_id and item_id = p_item_id
+  order by effective_at desc
+  limit 1;
+
+  if found then
+    update supplier_price
+    set prev_price = v_existing.price, price = p_price, source = 'manual', effective_at = now(),
+        receipt_id = null, created_by = v_app_user_id
+    where id = v_existing.id
+    returning * into v_row;
+  else
+    insert into supplier_price (tenant_id, supplier_id, item_id, price, prev_price, source, created_by)
+    values (v_tenant_id, p_supplier_id, p_item_id, p_price, null, 'manual', v_app_user_id)
+    returning * into v_row;
+  end if;
+
+  return jsonb_build_object(
+    'kind', 'ok',
+    'id', v_row.id, 'price', v_row.price, 'prev_price', v_row.prev_price,
+    'source', v_row.source, 'effective_at', v_row.effective_at, 'created_by', v_row.created_by
+  );
+end;
+$$;
+
+comment on function rpc_supplier_price_record(uuid, uuid, numeric) is
+  '§6 Step 5. SECURITY INVOKER — RLS on supplier/supplier_price is what '
+  'actually restricts this; the function adds the same atomicity+attribution '
+  'guarantees rpc_job_complete/rpc_closeout_set_rework_cause already '
+  'established for their own tables.';
+
+revoke execute on function rpc_supplier_price_record(uuid, uuid, numeric) from public;
+grant execute on function rpc_supplier_price_record(uuid, uuid, numeric) to authenticated;
+
+-- rpc_quote_create: ports POST /quotes (routes/quotes.ts). quote.created_by
+-- is an attribution column (`references app_user(id)`, 03-schema.sql §6) —
+-- same reasoning as every other attribution column in this file
+-- (rework_cause_set_by, job_checklist_item.updated_by): must resolve
+-- server-side via fn_current_app_user_id(), not trust a client-supplied
+-- value, or any caller could claim any app_user id as the quote's creator.
+-- No atomicity concern otherwise (a single insert) -- this function exists
+-- purely for the attribution guarantee, the same reason
+-- rpc_closeout_set_rework_cause needed one even though its own write is
+-- also just one statement.
+create or replace function rpc_quote_create(
+  p_client_id uuid,
+  p_job_type text,
+  p_quoted_hours numeric,
+  p_quoted_materials numeric
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_tenant_id uuid;
+  v_app_user_id uuid;
+  v_row record;
+begin
+  v_tenant_id := fn_current_tenant_id();
+  if v_tenant_id is null then
+    raise exception 'rpc_quote_create: no tenant context resolved for this session';
+  end if;
+  v_app_user_id := fn_current_app_user_id();
+
+  insert into quote (tenant_id, client_id, job_type, quoted_hours, quoted_materials, created_by)
+  values (v_tenant_id, p_client_id, p_job_type, p_quoted_hours, p_quoted_materials, v_app_user_id)
+  returning * into v_row;
+
+  return jsonb_build_object('kind', 'ok', 'id', v_row.id);
+end;
+$$;
+
+comment on function rpc_quote_create(uuid, text, numeric, numeric) is
+  '§6 Step 5. SECURITY INVOKER — RLS on quote/client is what actually '
+  'restricts this (an invalid/cross-tenant client_id fails the same way '
+  'rpc_create_job_from_quote''s own cross-tenant checks do); '
+  'fn_current_app_user_id() resolves created_by server-side.';
+
+revoke execute on function rpc_quote_create(uuid, text, numeric, numeric) from public;
+grant execute on function rpc_quote_create(uuid, text, numeric, numeric) to authenticated;
+
+-- rpc_quote_lines_replace: ports PATCH /quotes/:id/lines (routes/quotes.ts)
+-- -- "full replace of the BOM in one call" per that route's own comment,
+-- delete-then-reinsert inside one transaction because quote_line has no
+-- independent identity clients rely on. Genuinely needs the atomicity: a
+-- client doing a separate DELETE then several INSERTs (the only way to
+-- replicate this from the browser without an RPC) could leave the quote
+-- with zero lines, visible to a concurrent read, for however long the
+-- INSERTs take -- this function makes that window disappear the same way
+-- wrapping it in one Postgres function always does for RLS-scoped SECURITY
+-- INVOKER writes in this file.
+create or replace function rpc_quote_lines_replace(p_quote_id uuid, p_lines jsonb)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_quote_exists boolean;
+  v_line jsonb;
+  v_inserted jsonb := '[]'::jsonb;
+  -- Found empirically (a real frontend-shaped call returned
+  -- {"lines":[{"jsonb_build_object":{"id":...}}]}, not the intended
+  -- {"lines":[{"id":...}]}): declaring this as `record` and doing
+  -- `returning jsonb_build_object(...) into v_row` gives the record ONE
+  -- field, itself named after the unaliased expression
+  -- ("jsonb_build_object") -- so to_jsonb(v_row) below wrapped the
+  -- already-correct jsonb value in an extra layer named after that
+  -- accidental column name. Declaring v_row as jsonb directly and
+  -- appending via jsonb_build_array (not to_jsonb) avoids ever going
+  -- through that record-with-one-oddly-named-column step at all. Harmless
+  -- for job-detail.tsx today (it only checks data.kind, never reads
+  -- data.lines), fixed anyway since a future caller reading the ids back
+  -- would have silently gotten the wrong shape.
+  v_row jsonb;
+begin
+  select exists(select 1 from quote where id = p_quote_id) into v_quote_exists;
+  if not v_quote_exists then
+    return jsonb_build_object('kind', 'not_found');
+  end if;
+
+  -- RLS on quote_line already scopes this delete to the caller's own
+  -- tenant (tenant_isolation, same as every table in this file) -- no
+  -- explicit tenant_id check needed here, matching every other function's
+  -- own reasoning for the same omission.
+  delete from quote_line where quote_id = p_quote_id;
+
+  for v_line in select * from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb))
+  loop
+    insert into quote_line (tenant_id, quote_id, item_id, description, qty, planned_supplier_id, unit_price)
+    values (
+      fn_current_tenant_id(),
+      p_quote_id,
+      nullif(v_line->>'item_id', '')::uuid,
+      v_line->>'description',
+      (v_line->>'qty')::numeric,
+      nullif(v_line->>'planned_supplier_id', '')::uuid,
+      (v_line->>'unit_price')::numeric
+    )
+    returning jsonb_build_object('id', id) into v_row;
+    v_inserted := v_inserted || jsonb_build_array(v_row);
+  end loop;
+
+  return jsonb_build_object('kind', 'ok', 'lines', v_inserted);
+end;
+$$;
+
+comment on function rpc_quote_lines_replace(uuid, jsonb) is
+  '§6 Step 5. SECURITY INVOKER — RLS on quote/quote_line is what actually '
+  'restricts this; the function adds the atomicity a delete-then-reinsert '
+  'sequence needs, same reasoning as every other multi-statement RPC in '
+  'this file.';
+
+revoke execute on function rpc_quote_lines_replace(uuid, jsonb) from public;
+grant execute on function rpc_quote_lines_replace(uuid, jsonb) to authenticated;
+
+-- rpc_quote_accept: ports POST /quotes/:id/accept (routes/quotes.ts) --
+-- draft/sent -> accepted, stamping accepted_at. Same TOCTOU shape
+-- rpc_job_complete's own comment already named for a different table: a
+-- read-then-conditional-write sequence a client observing through separate
+-- calls could race (two concurrent accepts both reading status='draft'
+-- before either write lands). Wrapped in one function closes that the same
+-- way every other status-guarded transition in this file already does.
+create or replace function rpc_quote_accept(p_quote_id uuid)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_status text;
+  v_row record;
+begin
+  select status into v_status from quote where id = p_quote_id for update;
+  if not found then
+    return jsonb_build_object('kind', 'not_found');
+  end if;
+  if v_status not in ('draft', 'sent') then
+    return jsonb_build_object('kind', 'conflict', 'status', v_status);
+  end if;
+
+  update quote set status = 'accepted', accepted_at = now()
+  where id = p_quote_id
+  returning id, status, accepted_at into v_row;
+
+  return jsonb_build_object('kind', 'ok', 'id', v_row.id, 'status', v_row.status, 'accepted_at', v_row.accepted_at);
+end;
+$$;
+
+comment on function rpc_quote_accept(uuid) is
+  '§6 Step 5. SECURITY INVOKER — RLS on quote restricts this to the '
+  'caller''s own tenant; FOR UPDATE closes the same concurrent-accept race '
+  'rpc_job_complete''s own FOR UPDATE closes for job.status.';
+
+revoke execute on function rpc_quote_accept(uuid) from public;
+grant execute on function rpc_quote_accept(uuid) to authenticated;
+
+-- Deliberately NOT here: technician device pairing (Fastify's POST
+-- /auth/technician/pair). A first attempt at rpc_technician_device_pair()
+-- assumed pairing was a plain "insert a row with a hashed PIN" write, like
+-- every other RPC in this file — wrong, discovered empirically (a real
+-- call against this project failed with "column pin_hash does not exist"),
+-- not assumed. schema.sql's own technician_device table has NO pin_hash
+-- column at all: its own comment says why — "the PIN is not stored
+-- redundantly in this table at all; it IS the Supabase Auth password for
+-- auth_user_id, verified by Supabase Auth itself at sign-in." Pairing a
+-- device the Supabase-native way means provisioning a real
+-- auth.users row (supabase.auth.admin.createUser(), the Admin API), which
+-- needs the service_role key — something a plain SECURITY INVOKER RPC
+-- running as `authenticated` structurally cannot do (nor should be able
+-- to: granting that would let any authenticated user create arbitrary auth
+-- identities). This is exactly the "technician/device auth" migration
+-- 08-supabase-native-migration.md §2 already named as deliberately
+-- separate, later, and more novel — not something to fold into this
+-- slice's plain-CRUD RPCs. Technician pairing (apps/web's
+-- /office/technicians page) stays entirely Fastify-backed for now.

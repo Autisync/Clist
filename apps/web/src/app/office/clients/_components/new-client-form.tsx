@@ -1,15 +1,17 @@
 "use client";
 
 /*
- * Create-client form. POST /clients, then router.refresh() so the
- * server-fetched list on the parent page re-runs and picks up the new row
- * — no client-side list state to keep in sync by hand.
+ * Create-client form. §6 Step 5: writes straight to Supabase (RLS-scoped
+ * insert, no RPC needed — plain CRUD, no atomicity/attribution concern),
+ * then router.refresh() so the server-fetched list on the parent page
+ * re-runs and picks up the new row — no client-side list state to keep in
+ * sync by hand.
  */
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, UserPlus } from "lucide-react";
-import { apiFetch, ApiError } from "@/lib/api";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export function NewClientForm() {
   const router = useRouter();
@@ -25,26 +27,21 @@ export function NewClientForm() {
     setError(null);
     setSubmitting(true);
     try {
-      await apiFetch("/clients", {
-        method: "POST",
-        body: JSON.stringify({
-          name: name.trim(),
-          address: address.trim() || undefined,
-          phone: phone.trim() || undefined,
-          email: email.trim() || undefined,
-        }),
+      const supabase = createSupabaseBrowserClient();
+      const { error: insertError } = await supabase.from("client").insert({
+        name: name.trim(),
+        address: address.trim() || null,
+        phone: phone.trim() || null,
+        email: email.trim() || null,
       });
+      if (insertError) throw insertError;
       setName("");
       setAddress("");
       setPhone("");
       setEmail("");
       router.refresh();
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 400) {
-        setError("Dados inválidos — verifique o nome e o email.");
-      } else {
-        setError("Não foi possível criar o cliente. Tente novamente.");
-      }
+    } catch {
+      setError("Não foi possível criar o cliente. Tente novamente.");
     } finally {
       setSubmitting(false);
     }

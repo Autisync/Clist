@@ -1,21 +1,26 @@
 "use client";
 
 /*
- * Line-item editor (PATCH /quotes/:id/lines, full-replace — the whole
+ * Line-item editor (rpc_quote_lines_replace, full-replace — the whole
  * array is edited client-side then submitted as one call, per the build
- * task and the route's own semantics) + Aceitar (POST accept) + Criar
- * trabalho (POST create-job, redirects to the new job's detail page).
+ * task and the RPC's own semantics) + Aceitar (rpc_quote_accept) + Criar
+ * trabalho (rpc_create_job_from_quote, redirects to the new job's detail
+ * page). §6 Step 5: every write here goes straight to Supabase now — see
+ * apps/api/supabase/rpc.sql's own comments on each function for why they
+ * needed one (atomicity for the delete-then-reinsert and the status-guarded
+ * accept transition, same TOCTOU reasoning job-detail's own RPCs already
+ * established).
  *
- * No GET for existing lines exists in apps/api (see page.tsx's comment),
- * so this editor always starts from an empty row set rather than
- * pretending to load saved lines — the amber note below says so plainly
- * instead of silently looking like data loss.
+ * No read path for existing lines exists yet either way (no
+ * v_quote_lines view or equivalent), so this editor always starts from an
+ * empty row set rather than pretending to load saved lines — the amber
+ * note below says so plainly instead of silently looking like data loss.
  */
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Plus, Trash2, Save, ArrowRight } from "lucide-react";
-import { apiFetch, ApiError } from "@/lib/api";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { Pill, quoteStatusLabel } from "../../../_components/pill";
 
 type Quote = {
@@ -95,17 +100,18 @@ export function QuoteDetail({
     setError(null);
     setSavingLines(true);
     try {
-      await apiFetch(`/quotes/${quote.id}/lines`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          lines: lines.map((l) => ({
-            item_id: l.item_id || undefined,
-            description: l.description.trim(),
-            qty: Number(l.qty),
-            unit_price: Number(l.unit_price),
-          })),
-        }),
+      const supabase = createSupabaseBrowserClient();
+      const { data, error: rpcError } = await supabase.rpc("rpc_quote_lines_replace", {
+        p_quote_id: quote.id,
+        p_lines: lines.map((l) => ({
+          item_id: l.item_id || undefined,
+          description: l.description.trim(),
+          qty: Number(l.qty),
+          unit_price: Number(l.unit_price),
+        })),
       });
+      if (rpcError) throw rpcError;
+      if (data.kind !== "ok") throw new Error(data.kind);
       setLinesSaved(true);
     } catch {
       setError("Não foi possível guardar as linhas. Tente novamente.");
@@ -118,16 +124,20 @@ export function QuoteDetail({
     setError(null);
     setAccepting(true);
     try {
-      const res = await apiFetch<{ status: string }>(`/quotes/${quote.id}/accept`, {
-        method: "POST",
+      const supabase = createSupabaseBrowserClient();
+      const { data, error: rpcError } = await supabase.rpc("rpc_quote_accept", {
+        p_quote_id: quote.id,
       });
-      setStatus(res.status);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
+      if (rpcError) throw rpcError;
+      if (data.kind === "ok") {
+        setStatus(data.status);
+      } else if (data.kind === "conflict") {
         setError("Este orçamento já foi finalizado.");
       } else {
         setError("Não foi possível aceitar o orçamento. Tente novamente.");
       }
+    } catch {
+      setError("Não foi possível aceitar o orçamento. Tente novamente.");
     } finally {
       setAccepting(false);
     }
@@ -137,10 +147,13 @@ export function QuoteDetail({
     setError(null);
     setCreatingJob(true);
     try {
-      const res = await apiFetch<{ id: string }>(`/quotes/${quote.id}/create-job`, {
-        method: "POST",
+      const supabase = createSupabaseBrowserClient();
+      const { data, error: rpcError } = await supabase.rpc("rpc_create_job_from_quote", {
+        p_quote_id: quote.id,
       });
-      router.push(`/office/jobs/${res.id}`);
+      if (rpcError) throw rpcError;
+      if (data.kind !== "ok") throw new Error(data.kind);
+      router.push(`/office/jobs/${data.job_id}`);
     } catch {
       setError("Não foi possível criar o trabalho. Tente novamente.");
       setCreatingJob(false);

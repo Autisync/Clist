@@ -1,16 +1,17 @@
 "use client";
 
 /*
- * POST /quotes {client_id, job_type, quoted_hours, quoted_materials} —
+ * rpc_quote_create(client_id, job_type, quoted_hours, quoted_materials) —
  * on success, redirect straight to the new quote's detail page (where the
  * line-item editor / accept / create-job flow lives) rather than back to
- * the list.
+ * the list. §6 Step 5: created_by resolves server-side inside the RPC —
+ * see rpc.sql's own comment on why this needed one, not a plain insert.
  */
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle } from "lucide-react";
-import { apiFetch, ApiError } from "@/lib/api";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 type Client = { id: string; name: string };
 
@@ -28,22 +29,18 @@ export function NewQuoteForm({ clients }: { clients: Client[] }) {
     setError(null);
     setSubmitting(true);
     try {
-      const { id } = await apiFetch<{ id: string }>("/quotes", {
-        method: "POST",
-        body: JSON.stringify({
-          client_id: clientId,
-          job_type: jobType.trim(),
-          quoted_hours: Number(quotedHours),
-          quoted_materials: Number(quotedMaterials),
-        }),
+      const supabase = createSupabaseBrowserClient();
+      const { data, error: rpcError } = await supabase.rpc("rpc_quote_create", {
+        p_client_id: clientId,
+        p_job_type: jobType.trim(),
+        p_quoted_hours: Number(quotedHours),
+        p_quoted_materials: Number(quotedMaterials),
       });
-      router.push(`/office/quotes/${id}`);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 400) {
-        setError("Dados inválidos — verifique os campos preenchidos.");
-      } else {
-        setError("Não foi possível criar o orçamento. Tente novamente.");
-      }
+      if (rpcError) throw rpcError;
+      if (data.kind !== "ok") throw new Error(data.kind);
+      router.push(`/office/quotes/${data.id}`);
+    } catch {
+      setError("Não foi possível criar o orçamento. Tente novamente.");
       setSubmitting(false);
     }
   }

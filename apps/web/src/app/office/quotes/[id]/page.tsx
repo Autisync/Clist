@@ -1,24 +1,20 @@
 /*
- * Quote detail — line-item editor, accept, create-job.
- *
- * There is no GET /quotes/:id or GET /quotes/:id/lines route in apps/api
- * (checked apps/api/src/routes/quotes.ts — only GET /quotes (list),
- * PATCH .../lines, POST .../accept, POST .../create-job exist). So:
- *   - the quote header is found by fetching GET /quotes and filtering by
- *     id client-side on the server (small tenant-scoped list, not a
- *     real N+1 concern);
- *   - the line-item editor has no existing lines to prefill from — it
- *     starts empty and the whole array is submitted as one PATCH
- *     (full-replace semantics), exactly as the build task specifies.
- *     QuoteDetail (the client component) surfaces this as a small note so
- *     it doesn't read as a bug.
+ * Quote detail — line-item editor, accept, create-job. §6 Step 5: reads now
+ * go straight to Supabase — the quote row fetched directly by id (RLS
+ * scopes it, .maybeSingle() + notFound() covers "doesn't exist or isn't
+ * mine"), client name and catalog items each their own direct
+ * `.from(...)` query. No v_quote_lines view or equivalent exists yet, so
+ * the line-item editor still has no existing lines to prefill from — it
+ * starts empty and the whole array is submitted as one call
+ * (rpc_quote_lines_replace's full-replace semantics), exactly as before.
+ * QuoteDetail (the client component) surfaces this as a small note so it
+ * doesn't read as a bug.
  */
 
 import { notFound } from "next/navigation";
 import { Receipt } from "lucide-react";
-import { serverApiFetch, ApiError } from "@/lib/api";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { QuoteDetail } from "./_components/quote-detail";
-import { FastifyUnavailable } from "../../_components/fastify-unavailable";
 
 type Quote = {
   id: string;
@@ -31,34 +27,29 @@ type Quote = {
   created_at: string;
 };
 
-type Client = { id: string; name: string; address: string | null };
-type CatalogItem = { id: string; sku: string; name: string; unit: string };
-
 export default async function QuoteDetailPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  const supabase = await createSupabaseServerClient();
 
-  let quotes: Quote[];
-  let clients: Client[];
-  let catalog_items: CatalogItem[];
-  try {
-    [{ quotes }, { clients }, { catalog_items }] = await Promise.all([
-      serverApiFetch<{ quotes: Quote[] }>("/quotes"),
-      serverApiFetch<{ clients: Client[] }>("/clients"),
-      serverApiFetch<{ catalog_items: CatalogItem[] }>("/catalog-items"),
-    ]);
-  } catch (err) {
-    if (err instanceof ApiError) return <FastifyUnavailable pageLabel="O detalhe do orçamento" />;
-    throw err;
-  }
-
-  const quote = quotes.find((q) => q.id === id);
+  const { data: quote, error: quoteError } = await supabase
+    .from("quote")
+    .select("id, client_id, job_type, quoted_hours, quoted_materials, status, accepted_at, created_at")
+    .eq("id", id)
+    .maybeSingle();
+  if (quoteError) throw quoteError;
   if (!quote) notFound();
 
-  const client = clients.find((c) => c.id === quote.client_id) ?? null;
+  const [{ data: client, error: clientError }, { data: catalogItems, error: catalogError }] =
+    await Promise.all([
+      supabase.from("client").select("id, name").eq("id", quote.client_id).maybeSingle(),
+      supabase.from("catalog_item").select("id, sku, name, unit").order("name", { ascending: true }),
+    ]);
+  if (clientError) throw clientError;
+  if (catalogError) throw catalogError;
 
   return (
     <div className="max-w-3xl space-y-5">
@@ -72,7 +63,7 @@ export default async function QuoteDetailPage({
         </div>
       </div>
 
-      <QuoteDetail quote={quote} catalogItems={catalog_items} />
+      <QuoteDetail quote={quote as Quote} catalogItems={catalogItems ?? []} />
     </div>
   );
 }

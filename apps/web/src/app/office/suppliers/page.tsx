@@ -1,31 +1,35 @@
 /*
- * Suppliers — real page (07-phase4-cost-intelligence.md §3-5). Server
- * Component fetches the initial supplier list + catalog items (needed by
- * the manual add-price form's item picker); the rest — selection, price
- * table, add-price form, receipt upload/review/confirm — is genuinely
- * interactive, so it lives in the client component below. Structure ported
- * from fieldready-prototype.jsx's <Suppliers>: supplier card grid, selected
- * supplier detail (address/phone/hours + open state), price table with a
- * "Digitalizar recibo" action.
+ * Suppliers — real page (07-phase4-cost-intelligence.md §3-5). §6 Step 5:
+ * the initial supplier list + catalog items (needed by the manual
+ * add-price form's item picker) now come straight from Supabase; the rest
+ * — selection, price table, add-price form, receipt upload/review/confirm
+ * — is genuinely interactive, so it lives in the client component below
+ * (which itself is a mix: price reads/writes are Supabase-native,
+ * refresh-places/receipt upload/receipt confirm stay Fastify — see that
+ * file's own comment). Structure ported from fieldready-prototype.jsx's
+ * <Suppliers>: supplier card grid, selected supplier detail
+ * (address/phone/hours + open state), price table with a "Digitalizar
+ * recibo" action.
  */
 
 import { Store } from "lucide-react";
-import { serverApiFetch, ApiError } from "@/lib/api";
-import { SuppliersClient, type Supplier, type CatalogItem } from "./_components/suppliers-client";
-import { FastifyUnavailable } from "../_components/fastify-unavailable";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { SuppliersClient } from "./_components/suppliers-client";
 
 export default async function SuppliersPage() {
-  let suppliers: Supplier[];
-  let catalog_items: CatalogItem[];
-  try {
-    [{ suppliers }, { catalog_items }] = await Promise.all([
-      serverApiFetch<{ suppliers: Supplier[] }>("/suppliers"),
-      serverApiFetch<{ catalog_items: CatalogItem[] }>("/catalog-items"),
+  const supabase = await createSupabaseServerClient();
+  const [{ data: suppliers, error: suppliersError }, { data: catalogItems, error: catalogError }] =
+    await Promise.all([
+      supabase
+        .from("supplier")
+        .select("id, tenant_id, name, category, address, phone, account_note, place_id, distance_km, synced_at, hours, created_at")
+        .order("name", { ascending: true }),
+      supabase.from("catalog_item").select("id, sku, name, unit").order("name", { ascending: true }),
     ]);
-  } catch (err) {
-    if (err instanceof ApiError) return <FastifyUnavailable pageLabel="A lista de fornecedores" />;
-    throw err;
-  }
+  if (suppliersError) throw suppliersError;
+  if (catalogError) throw catalogError;
+
+  const allSuppliers = suppliers ?? [];
 
   return (
     <div className="space-y-5">
@@ -34,12 +38,12 @@ export default async function SuppliersPage() {
         <h1 className="text-lg font-semibold text-zinc-900">Fornecedores</h1>
       </div>
 
-      {suppliers.length === 0 ? (
+      {allSuppliers.length === 0 ? (
         <div className="bg-white rounded border border-dashed border-zinc-300 p-6 text-sm text-zinc-500">
-          Ainda não existem fornecedores. Crie um em <code className="font-mono">POST /suppliers</code>.
+          Ainda não existem fornecedores.
         </div>
       ) : (
-        <SuppliersClient initialSuppliers={suppliers} catalogItems={catalog_items} />
+        <SuppliersClient initialSuppliers={allSuppliers} catalogItems={catalogItems ?? []} />
       )}
     </div>
   );

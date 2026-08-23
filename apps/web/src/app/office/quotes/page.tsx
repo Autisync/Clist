@@ -1,16 +1,14 @@
 /*
- * Quote list. GET /quotes returns quote rows with client_id but no client
- * name (03-schema.sql §6's quote table has no denormalized name, and the
- * route does no join — checked apps/api/src/routes/quotes.ts), so this
- * page also fetches GET /clients once and joins client names in on the
- * server before rendering — two total requests, not N+1.
+ * Quote list. §6 Step 5: reads now go straight to Supabase — quote rows
+ * have client_id but no denormalized client name (03-schema.sql §6), so
+ * this page also reads `client` once and joins names in on the server
+ * before rendering, same "two total requests, not N+1" shape as before.
  */
 
 import Link from "next/link";
 import { Receipt, Plus } from "lucide-react";
-import { serverApiFetch, ApiError } from "@/lib/api";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { Pill, quoteStatusLabel } from "../_components/pill";
-import { FastifyUnavailable } from "../_components/fastify-unavailable";
 
 type Quote = {
   id: string;
@@ -23,24 +21,23 @@ type Quote = {
   created_at: string;
 };
 
-type Client = { id: string; name: string };
-
 const eur = (n: string | number) => `€${Number(n).toFixed(2)}`;
 
 export default async function QuotesPage() {
-  let quotes: Quote[];
-  let clients: Client[];
-  try {
-    [{ quotes }, { clients }] = await Promise.all([
-      serverApiFetch<{ quotes: Quote[] }>("/quotes"),
-      serverApiFetch<{ clients: Client[] }>("/clients"),
+  const supabase = await createSupabaseServerClient();
+  const [{ data: quotes, error: quotesError }, { data: clients, error: clientsError }] =
+    await Promise.all([
+      supabase
+        .from("quote")
+        .select("id, client_id, job_type, quoted_hours, quoted_materials, status, accepted_at, created_at")
+        .order("created_at", { ascending: false }),
+      supabase.from("client").select("id, name"),
     ]);
-  } catch (err) {
-    if (err instanceof ApiError) return <FastifyUnavailable pageLabel="A lista de orçamentos" />;
-    throw err;
-  }
+  if (quotesError) throw quotesError;
+  if (clientsError) throw clientsError;
 
-  const clientName = new Map(clients.map((c) => [c.id, c.name]));
+  const allQuotes = (quotes ?? []) as Quote[];
+  const clientName = new Map((clients ?? []).map((c) => [c.id, c.name]));
 
   return (
     <div className="space-y-5">
@@ -59,7 +56,7 @@ export default async function QuotesPage() {
       </div>
 
       <div className="bg-white rounded border border-zinc-200">
-        {quotes.length === 0 ? (
+        {allQuotes.length === 0 ? (
           <p className="p-4 text-sm text-zinc-500">Ainda não existem orçamentos.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -75,7 +72,7 @@ export default async function QuotesPage() {
                 </tr>
               </thead>
               <tbody>
-                {quotes.map((q) => {
+                {allQuotes.map((q) => {
                   const { label, tone } = quoteStatusLabel(q.status);
                   return (
                     <tr key={q.id} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50">

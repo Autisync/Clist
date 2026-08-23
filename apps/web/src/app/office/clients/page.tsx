@@ -1,34 +1,28 @@
 /*
- * Client list + create form. GET /clients (server-fetched, no query params
- * per the API map) and POST /clients (client-side form, see
- * _components/new-client-form.tsx). Table/Section visual structure follows
- * the Section/table pattern already established in
+ * Client list + create form. §6 Step 5: reads now go straight to Supabase
+ * (RLS-scoped, real HTTP over PostgREST) via the server client, matching
+ * every other cut-over page's own pattern — plain `.from('client')`, no RPC
+ * needed (trivial CRUD, no atomicity/attribution concern the way job-detail's
+ * writes had). Create (see _components/new-client-form.tsx) is the same
+ * direct-write shape, client-side via the browser client. Table/Section
+ * visual structure follows the Section/table pattern already established in
  * fieldready-prototype.jsx (JobList's "Histórico" table) rather than
  * inventing a new one.
  */
 
 import { Users } from "lucide-react";
-import { serverApiFetch, ApiError } from "@/lib/api";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { NewClientForm } from "./_components/new-client-form";
-import { FastifyUnavailable } from "../_components/fastify-unavailable";
-
-type Client = {
-  id: string;
-  name: string;
-  address: string | null;
-  phone: string | null;
-  email: string | null;
-  created_at: string;
-};
 
 export default async function ClientsPage() {
-  let clients: Client[];
-  try {
-    ({ clients } = await serverApiFetch<{ clients: Client[] }>("/clients"));
-  } catch (err) {
-    if (err instanceof ApiError) return <FastifyUnavailable pageLabel="A lista de clientes" />;
-    throw err;
-  }
+  const supabase = await createSupabaseServerClient();
+  const { data: clients, error } = await supabase
+    .from("client")
+    .select("id, name, address, phone, email, created_at")
+    .order("name", { ascending: true });
+  if (error) throw error;
+
+  const allClients = clients ?? [];
 
   return (
     <div className="space-y-5">
@@ -42,10 +36,10 @@ export default async function ClientsPage() {
           <div className="px-4 py-3 border-b border-zinc-100">
             <h2 className="text-sm font-semibold text-zinc-900">
               Todos os clientes{" "}
-              <span className="font-mono tabular-nums text-zinc-400">({clients.length})</span>
+              <span className="font-mono tabular-nums text-zinc-400">({allClients.length})</span>
             </h2>
           </div>
-          {clients.length === 0 ? (
+          {allClients.length === 0 ? (
             <p className="p-4 text-sm text-zinc-500">Ainda não existem clientes.</p>
           ) : (
             <div className="overflow-x-auto">
@@ -59,7 +53,7 @@ export default async function ClientsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {clients.map((c) => (
+                  {allClients.map((c) => (
                     <tr key={c.id} className="border-b border-zinc-100 last:border-0">
                       <td className="py-2 px-4 font-medium text-zinc-900">{c.name}</td>
                       <td className="py-2 px-4 text-zinc-600">{c.address || "—"}</td>
