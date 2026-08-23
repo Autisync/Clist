@@ -10,14 +10,22 @@
  */
 
 import { Store } from "lucide-react";
-import { serverApiFetch } from "@/lib/api";
+import { serverApiFetch, ApiError } from "@/lib/api";
 import { SuppliersClient, type Supplier, type CatalogItem } from "./_components/suppliers-client";
+import { FastifyUnavailable } from "../_components/fastify-unavailable";
 
 export default async function SuppliersPage() {
-  const [{ suppliers }, { catalog_items }] = await Promise.all([
-    serverApiFetch<{ suppliers: Supplier[] }>("/suppliers"),
-    serverApiFetch<{ catalog_items: CatalogItem[] }>("/catalog-items"),
-  ]);
+  let suppliers: Supplier[];
+  let catalog_items: CatalogItem[];
+  try {
+    [{ suppliers }, { catalog_items }] = await Promise.all([
+      serverApiFetch<{ suppliers: Supplier[] }>("/suppliers"),
+      serverApiFetch<{ catalog_items: CatalogItem[] }>("/catalog-items"),
+    ]);
+  } catch (err) {
+    if (err instanceof ApiError) return <FastifyUnavailable pageLabel="A lista de fornecedores" />;
+    throw err;
+  }
 
   return (
     <div className="space-y-5">

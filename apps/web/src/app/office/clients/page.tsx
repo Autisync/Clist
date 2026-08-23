@@ -8,8 +8,9 @@
  */
 
 import { Users } from "lucide-react";
-import { serverApiFetch } from "@/lib/api";
+import { serverApiFetch, ApiError } from "@/lib/api";
 import { NewClientForm } from "./_components/new-client-form";
+import { FastifyUnavailable } from "../_components/fastify-unavailable";
 
 type Client = {
   id: string;
@@ -21,7 +22,13 @@ type Client = {
 };
 
 export default async function ClientsPage() {
-  const { clients } = await serverApiFetch<{ clients: Client[] }>("/clients");
+  let clients: Client[];
+  try {
+    ({ clients } = await serverApiFetch<{ clients: Client[] }>("/clients"));
+  } catch (err) {
+    if (err instanceof ApiError) return <FastifyUnavailable pageLabel="A lista de clientes" />;
+    throw err;
+  }
 
   return (
     <div className="space-y-5">

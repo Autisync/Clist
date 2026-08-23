@@ -32,8 +32,9 @@ import {
   TrendingDown,
   Info,
 } from "lucide-react";
-import { serverApiFetch } from "@/lib/api";
+import { serverApiFetch, ApiError } from "@/lib/api";
 import { Pill, jobStatusLabel, type PillTone } from "./_components/pill";
+import { FastifyUnavailable } from "./_components/fastify-unavailable";
 
 type Job = {
   id: string;
@@ -175,6 +176,15 @@ function Section({
 }
 
 export default async function DashboardPage() {
+  try {
+    return await renderDashboard();
+  } catch (err) {
+    if (err instanceof ApiError) return <FastifyUnavailable pageLabel="O dashboard" />;
+    throw err;
+  }
+}
+
+async function renderDashboard() {
   const [
     { jobs },
     { clients },

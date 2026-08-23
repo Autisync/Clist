@@ -8,8 +8,9 @@
 
 import Link from "next/link";
 import { Receipt, Plus } from "lucide-react";
-import { serverApiFetch } from "@/lib/api";
+import { serverApiFetch, ApiError } from "@/lib/api";
 import { Pill, quoteStatusLabel } from "../_components/pill";
+import { FastifyUnavailable } from "../_components/fastify-unavailable";
 
 type Quote = {
   id: string;
@@ -27,10 +28,17 @@ type Client = { id: string; name: string };
 const eur = (n: string | number) => `€${Number(n).toFixed(2)}`;
 
 export default async function QuotesPage() {
-  const [{ quotes }, { clients }] = await Promise.all([
-    serverApiFetch<{ quotes: Quote[] }>("/quotes"),
-    serverApiFetch<{ clients: Client[] }>("/clients"),
-  ]);
+  let quotes: Quote[];
+  let clients: Client[];
+  try {
+    [{ quotes }, { clients }] = await Promise.all([
+      serverApiFetch<{ quotes: Quote[] }>("/quotes"),
+      serverApiFetch<{ clients: Client[] }>("/clients"),
+    ]);
+  } catch (err) {
+    if (err instanceof ApiError) return <FastifyUnavailable pageLabel="A lista de orçamentos" />;
+    throw err;
+  }
 
   const clientName = new Map(clients.map((c) => [c.id, c.name]));
 

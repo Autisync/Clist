@@ -16,8 +16,9 @@
 
 import { notFound } from "next/navigation";
 import { Receipt } from "lucide-react";
-import { serverApiFetch } from "@/lib/api";
+import { serverApiFetch, ApiError } from "@/lib/api";
 import { QuoteDetail } from "./_components/quote-detail";
+import { FastifyUnavailable } from "../../_components/fastify-unavailable";
 
 type Quote = {
   id: string;
@@ -40,11 +41,19 @@ export default async function QuoteDetailPage({
 }) {
   const { id } = await params;
 
-  const [{ quotes }, { clients }, { catalog_items }] = await Promise.all([
-    serverApiFetch<{ quotes: Quote[] }>("/quotes"),
-    serverApiFetch<{ clients: Client[] }>("/clients"),
-    serverApiFetch<{ catalog_items: CatalogItem[] }>("/catalog-items"),
-  ]);
+  let quotes: Quote[];
+  let clients: Client[];
+  let catalog_items: CatalogItem[];
+  try {
+    [{ quotes }, { clients }, { catalog_items }] = await Promise.all([
+      serverApiFetch<{ quotes: Quote[] }>("/quotes"),
+      serverApiFetch<{ clients: Client[] }>("/clients"),
+      serverApiFetch<{ catalog_items: CatalogItem[] }>("/catalog-items"),
+    ]);
+  } catch (err) {
+    if (err instanceof ApiError) return <FastifyUnavailable pageLabel="O detalhe do orçamento" />;
+    throw err;
+  }
 
   const quote = quotes.find((q) => q.id === id);
   if (!quote) notFound();
