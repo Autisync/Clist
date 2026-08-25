@@ -22,6 +22,29 @@
 # never commit real values into this file. Same values as Render's
 # Blueprint prompts for for; see apps/api/HOSTING.md's env var table for
 # what each one is.
+#
+# TLS/routing: this assumes a Traefik instance is already running on this
+# host with a Docker provider watching an external network named `proxy`
+# (confirmed empirically on the real server this was written against —
+# `docker inspect traefik` showed exactly this network, and an existing
+# working service on the same host had the identical label shape this file
+# copies verbatim, right down to the `letsencrypt` certresolver name and
+# `websecure` entrypoint — nothing here is guessed). If your own Traefik
+# setup uses different names, `docker inspect <a working container behind
+# it>` for its labels and adjust the four `traefik.*` values below to
+# match, the same way this file's own values were determined. No TLS/proxy
+# setup at all yet? Delete the `labels:`/`networks:` blocks below and
+# uncomment `ports: ["3001:3001"]` instead — that plain HTTP-on-a-bare-IP
+# setup is what apps/api/HOSTING.md's own testing already proved works
+# end to end, just without a real domain or TLS in front of it.
+#
+# HOST_DOMAIN below needs a real, publicly resolvable hostname pointed at
+# this server's IP before Traefik can get a Let's Encrypt cert for it — a
+# bare IP address doesn't work for that. No domain yet? A free
+# https://sslip.io hostname (e.g. `<dashes-for-dots-IP>.sslip.io`, which
+# resolves to exactly that IP with zero registration) works exactly the
+# same as a real domain for this purpose — confirmed resolving correctly
+# before this file ever assumed it would.
 
 services:
   fieldready-api:
@@ -29,11 +52,22 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
-    ports:
-      - "3001:3001" # put your own reverse proxy (nginx/Caddy/Traefik) in
-      # front of this for a real domain + TLS -- Portainer doesn't set
-      # that up for you, same as Render handled it for you and a bare VPS
-      # doesn't.
+    # No `ports:` mapping — Traefik reaches this container over the
+    # `proxy` network by its internal port (3001) directly; publishing it
+    # to the host too would mean an unauthenticated, un-TLS'd copy of the
+    # same API sitting open on the internet right alongside the properly
+    # proxied one, which defeats the point of adding Traefik at all.
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.fieldready-api.rule=Host(`${HOST_DOMAIN}`)"
+      - "traefik.http.routers.fieldready-api.entrypoints=websecure"
+      - "traefik.http.routers.fieldready-api.tls=true"
+      - "traefik.http.routers.fieldready-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.fieldready-api.service=fieldready-api-svc"
+      - "traefik.http.services.fieldready-api-svc.loadbalancer.server.port=3001"
     environment:
       - HOST=0.0.0.0
       - PORT=3001
@@ -52,6 +86,10 @@ services:
       # env vars, the same way Render's Blueprint generates one for you
       # instead of asking.
       - SESSION_JWT_SECRET
+      # The real hostname Traefik routes to this service (see the file
+      # header comment) -- e.g. 46-224-205-82.sslip.io. Also referenced
+      # directly in the labels above via ${HOST_DOMAIN} substitution.
+      - HOST_DOMAIN
       # Optional -- all four unset keeps using the deterministic fixture
       # OCR provider (apps/api/.env.example's own comment on this).
       - VERYFI_CLIENT_ID
@@ -66,6 +104,10 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+networks:
+  proxy:
+    external: true
 
 volumes:
   fieldready-api-objects:

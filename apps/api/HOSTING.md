@@ -147,12 +147,29 @@ To deploy it:
    plus a real random `SESSION_JWT_SECRET` (Render's Blueprint generates
    one for you; here you generate it yourself — `openssl rand -hex 32` —
    and paste it in, since Portainer has no equivalent auto-generate
-   button).
-3. Deploy the stack. Put your own reverse proxy (nginx/Caddy/Traefik) in
-   front of the container's published port for a real domain + TLS —
-   Portainer doesn't set that up for you the way Render does.
-4. Point `apps/web`'s `FIELDREADY_API_ORIGIN` at whatever public URL your
-   reverse proxy serves.
+   button), plus `HOST_DOMAIN` (see below).
+3. Deploy the stack.
+
+**TLS/routing** — `portainer-stack.yml`'s Traefik labels assume a Traefik
+instance is already running on the host with a Docker provider watching an
+external network named `proxy`; if yours does too (check by comparing
+against an existing working container's own labels — `docker inspect
+<container> --format '{{json .Config.Labels}}'`, confirmed empirically
+against a real host this way, not guessed), it just works once `HOST_DOMAIN`
+is set. No Traefik yet, or a different reverse proxy? The file's own header
+comment says exactly what to delete/uncomment to fall back to the plain
+`ports: ["3001:3001"]` setup this whole doc's testing already proved works,
+just without a real domain or TLS in front of it.
+
+No domain yet either? A free [sslip.io](https://sslip.io) hostname (e.g.
+`<your-server-ip-with-dashes-for-dots>.sslip.io`) resolves to your
+server's real IP with zero registration — Let's Encrypt can issue a real
+cert for it exactly like it would for a paid domain, since it's a real,
+publicly resolvable hostname (which a bare IP address structurally can't
+be). Confirmed resolving correctly before relying on it.
+
+4. Point `apps/web`'s `FIELDREADY_API_ORIGIN` at `https://` + your
+   `HOST_DOMAIN`.
 
 ## Required environment variables
 
@@ -166,6 +183,7 @@ To deploy it:
 | `SESSION_JWT_SECRET` | A real random value — `render.yaml` has Render generate one; don't reuse the fixed strings the proof scripts use. |
 | `HOST` | `0.0.0.0` for any container host (§2 above). Leave unset locally. |
 | `FIELDREADY_RUNTIME_DIR` | Point this at your persistent disk's mount path (§3 above). |
+| `HOST_DOMAIN` | Portainer/Traefik setup only — the real hostname Traefik routes to this service (e.g. a sslip.io hostname, or a real domain). Not used by Render, which handles its own domain/TLS. |
 | `VERYFI_CLIENT_ID` / `VERYFI_CLIENT_SECRET` / `VERYFI_USERNAME` / `VERYFI_API_KEY` | Optional — all four unset keeps using the deterministic fixture OCR provider. |
 
 `FASTIFY_DB_SCHEMA` is optional and best left unset in production (defaults
