@@ -164,8 +164,11 @@ mutation and the direct route) evaluated against the frozen protocol; complete +
 technician close-out with the office-only `rework_cause` field confirmed unreachable
 from the technician route; and the same SIGKILL-mid-sync-then-restart-then-replay
 scenario Phase 1 proved, here on `execution_step.complete` to confirm the sync infra
-generalizes beyond the one mutation type Phase 1 exercised it against. 37/37 checks
-passing — `apps/api/test/phase2-proof.mjs`.
+generalizes beyond the one mutation type Phase 1 exercised it against. 44/44 checks
+passing — `apps/api/test/phase2-proof.mjs` (count grew from the original 37 as later
+phases' dispatch-gate/equipment/ited_classification edge cases accumulated onto this
+same proof script; re-verify with `npm run proof:phase2` rather than trusting either
+number if this file changes again).
 
 Full build plan, file by file, against Phase 1's actual code: `05-phase2-job-loop.md`. One
 scoping call worth flagging here: F13/F14 test-result capture starts in this phase, not
@@ -282,9 +285,61 @@ conclusions* once real usage accumulates, not about whether the code exists — 
 still needs to happen after rollout, same as it always did.
 
 All four phases in the build order above are now built and proven: `npm run build`,
-`verify-schema.mjs`, `verify-seed.mjs`, `proof:phase1` (21/21), `proof:phase2` (37/37),
+`verify-schema.mjs`, `verify-seed.mjs`, `proof:phase1` (21/21), `proof:phase2` (44/44),
 `proof:phase3` (37/37), `proof:phase4` (29/29), and `apps/web`'s `smoke:web` (23/23) all
 pass together against the current schema and seed.
+
+## Hosting and production status
+
+All four phases above are the application code, proven against PGlite (a real
+Postgres, compiled to WASM) and, separately, against a real Supabase project. Getting
+that code actually reachable on the internet is tracked here, not in a phase doc, since
+it's infrastructure work rather than product scope.
+
+**`apps/web`** (Next.js, office + field) is live on **Vercel** — see
+`apps/web/VERCEL.md` for the deploy steps and required env vars.
+
+**`apps/api`** (the classic Fastify system: Playwright PDF generation, receipt OCR,
+sourcing/pickup-plan, and anything else `apps/api/README.md`'s Supabase-native section
+still lists as deliberately Fastify-backed) needs a real persistent server, not a
+serverless function — full reasoning and two real, non-obvious fixes (the direct
+Supabase connection being IPv6-only; the server needing to bind `0.0.0.0`, not
+`127.0.0.1`, inside a container) in `apps/api/HOSTING.md`. Two real, proven options:
+
+- **Render** (`render.yaml`) — a managed Blueprint: TLS/domain/server maintenance
+  handled for you. Simplest path, recommended default.
+- **Self-hosted Portainer/Docker VPS** (`portainer-stack.yml`) — for when you already
+  run your own server. TLS/reverse-proxy is entirely your own responsibility here, and
+  the concrete mechanism varies by host: some Traefik instances discover services via
+  Docker labels (`providers.docker`), others — the reference host this was actually
+  proven against — route via small YAML files dropped into a watched directory
+  (`providers.file`), with the Docker labels doing nothing at all despite being
+  otherwise correct. `apps/api/HOSTING.md`'s TLS/routing section documents how to tell
+  which one you have before trusting either approach, plus a real working file-provider
+  snippet (including a backtick-copy-paste gotcha that bit the reference deployment).
+  Proven end-to-end on real infrastructure: a genuine Let's Encrypt certificate issued
+  for a free `sslip.io` hostname (no owned domain required), and a nonexistent route
+  returning Fastify's own real 404 JSON — not a proxy default — confirming HTTPS
+  traffic reaches the actual app, not just a health check.
+
+Either way, `apps/web`'s `FIELDREADY_API_ORIGIN` env var (Vercel) must point at
+whichever of these is actually running and reachable — a wrong or unreachable value
+here is the one way the two halves of this system can look individually fine (Vercel
+deployed, `apps/api` container healthy) while the office UI still throws a server-side
+exception on every page that calls it.
+
+**Supabase-native migration** (`apps/api/README.md`'s own section, `08-supabase-native-
+migration.md`): office auth, template engine reads, job creation/dispatch/closeout,
+compliance (REF/termo/deadlines), and clients/quotes/suppliers/dashboard now read and
+write Supabase directly from `apps/web` (RLS-governed `.from()` calls, or an RPC where
+atomicity/server-side attribution requires one — `fn_current_tenant_id()`/
+`fn_current_app_user_id()` resolve identity server-side so a client can never claim a
+tenant or user it isn't). Deliberately still Fastify-backed: technician device pairing
+(the Supabase-native `technician_device` table's `auth_user_id` makes this an
+Admin-API operation, not a plain insert — see `apps/api/README.md` for the full reasoning
+on why this wasn't force-fit into the RPC pattern the rest of the migration used),
+`/office/technicians` generally, suppliers' receipt upload/confirm and refresh-places,
+and job-detail's photo upload.
 
 ## What to run in parallel with Phase 1, not after it
 
