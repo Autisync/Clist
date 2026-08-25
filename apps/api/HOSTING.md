@@ -150,16 +150,81 @@ To deploy it:
    button), plus `HOST_DOMAIN` (see below).
 3. Deploy the stack.
 
-**TLS/routing** — `portainer-stack.yml`'s Traefik labels assume a Traefik
-instance is already running on the host with a Docker provider watching an
-external network named `proxy`; if yours does too (check by comparing
-against an existing working container's own labels — `docker inspect
-<container> --format '{{json .Config.Labels}}'`, confirmed empirically
-against a real host this way, not guessed), it just works once `HOST_DOMAIN`
-is set. No Traefik yet, or a different reverse proxy? The file's own header
-comment says exactly what to delete/uncomment to fall back to the plain
-`ports: ["3001:3001"]` setup this whole doc's testing already proved works,
-just without a real domain or TLS in front of it.
+**TLS/routing** — `portainer-stack.yml`'s Traefik labels only do anything if
+your Traefik instance actually has Docker-label service discovery enabled
+(a `providers.docker` block in its static config). **Don't assume this** —
+confirmed the hard way against the real host this was first deployed to:
+its Traefik runs `providers: {file: {directory: /dynamic, watch: true}}`
+only, no `providers.docker` section at all, so copying an existing working
+container's `traefik.*` labels verbatim (same certresolver, same
+entrypoint, joined the same `proxy` network, correct by every `docker
+inspect` check) still 404'd every request — that host's Traefik, and every
+service on it, is actually wired up via small YAML files dropped into that
+watched directory, and the Docker labels sitting on those containers are
+inert leftovers.
+
+Find out which one your host actually uses before trusting the labels:
+
+```bash
+docker inspect traefik --format '{{.Config.Cmd}}'   # e.g. --configFile=/traefik.yml
+docker exec traefik cat /traefik.yml                 # or whatever path that showed
+```
+
+- **See a `providers.docker` block?** The labels in `portainer-stack.yml`
+  are correct as written once `HOST_DOMAIN` is set — if the resolver/
+  entrypoint names differ from yours, compare against an existing working
+  container's own labels (`docker inspect <container> --format
+  '{{json .Config.Labels}}'`) the same way this file's original values were
+  determined, and adjust the four `traefik.*` lines to match.
+- **See a `providers.file` block instead** (or no Docker provider at all)?
+  Delete `portainer-stack.yml`'s `labels:` block (keep `networks: [proxy]`
+  — Traefik still needs to reach the container over that shared network
+  either way), find the host path behind that file provider's `directory:`
+  (`docker inspect traefik --format '{{json .Mounts}}'`, the mount whose
+  `Destination` matches), and drop a file there instead — `watch: true`
+  means Traefik picks it up within seconds, no restart. Real, confirmed-
+  working content (this is the exact fix used on the host referenced
+  above, proven with a live Let's Encrypt cert and a real end-to-end
+  request):
+
+  ```yaml
+  http:
+    routers:
+      fieldready-api:
+        rule: "Host(`your-domain-or-sslip.io-host`)"
+        entrypoints:
+          - websecure
+        tls:
+          certResolver: letsencrypt-http   # the HTTP-01 resolver your
+                                            # traefik.yml defines -- a
+                                            # DNS-01 resolver needs your
+                                            # domain on that DNS provider,
+                                            # which a sslip.io host isn't.
+        service: fieldready-api
+    services:
+      fieldready-api:
+        loadBalancer:
+          servers:
+            - url: "http://fieldready-api:3001"   # compose service name,
+                                                   # resolved via Docker's
+                                                   # own DNS on the shared
+                                                   # `proxy` network -- no
+                                                   # port publishing needed.
+  ```
+
+  Watch for one easy-to-hit mistake doing this by hand over SSH: the
+  `` Host(`...`) `` rule needs real backtick characters around the domain,
+  not a bare `Host(domain)` — a plain copy-paste through some terminals
+  silently drops backticks. Verify after writing the file:
+  `grep -o 'Host([^)]*)' <the file>` should print the domain wrapped in
+  `` ` `` on both sides; if not, regenerate the backtick from the shell
+  itself rather than retyping it (`BT=$'\140'` then reference `${BT}` in a
+  heredoc) so it can't get mangled a second time.
+
+No Traefik yet, or a different reverse proxy entirely? The file's own
+header comment says exactly what to delete/uncomment to fall back to the
+plain `ports: ["3001:3001"]` setup this whole doc's testing already proved
+works, just without a real domain or TLS in front of it.
 
 No domain yet either? A free [sslip.io](https://sslip.io) hostname (e.g.
 `<your-server-ip-with-dashes-for-dots>.sslip.io`) resolves to your

@@ -23,20 +23,69 @@
 # Blueprint prompts for for; see apps/api/HOSTING.md's env var table for
 # what each one is.
 #
-# TLS/routing: this assumes a Traefik instance is already running on this
-# host with a Docker provider watching an external network named `proxy`
-# (confirmed empirically on the real server this was written against —
-# `docker inspect traefik` showed exactly this network, and an existing
-# working service on the same host had the identical label shape this file
-# copies verbatim, right down to the `letsencrypt` certresolver name and
-# `websecure` entrypoint — nothing here is guessed). If your own Traefik
-# setup uses different names, `docker inspect <a working container behind
-# it>` for its labels and adjust the four `traefik.*` values below to
-# match, the same way this file's own values were determined. No TLS/proxy
-# setup at all yet? Delete the `labels:`/`networks:` blocks below and
-# uncomment `ports: ["3001:3001"]` instead — that plain HTTP-on-a-bare-IP
-# setup is what apps/api/HOSTING.md's own testing already proved works
-# end to end, just without a real domain or TLS in front of it.
+# TLS/routing: the `labels:`/`networks:` blocks below ONLY do anything if
+# the Traefik instance on your host actually has Docker-label service
+# discovery enabled (`providers.docker` in its static config). This is NOT
+# a safe default assumption -- confirmed the hard way against the real
+# server this file targets: it copied an existing working container's
+# `traefik.*` labels verbatim (right down to the same certresolver and
+# entrypoint names) and deployed clean, joined the right network, correct
+# labels by every `docker inspect` check -- and Traefik still 404'd every
+# request, because that host's Traefik runs `providers: {file: {directory:
+# /dynamic, watch: true}}` ONLY. No `providers.docker` section at all. Every
+# existing service on that host (including the one whose labels got
+# copied) is actually routed via a small YAML file in that watched
+# directory, and its Docker labels are inert leftovers that do nothing.
+#
+# Before trusting the labels below, check which provider your Traefik
+# actually uses:
+#   docker inspect traefik --format '{{.Config.Cmd}}'   # find its --configFile
+#   docker exec traefik cat /path/from/above             # read the static config
+# If you see a `providers.docker` block: the labels below are correct as
+# written (adjust the four `traefik.*` values to match your resolver/
+# entrypoint names the same way, via `docker inspect <a working container>`
+# for its labels). If you see `providers.file` instead (or no `docker`
+# provider at all): delete the `labels:` block below (keep `networks:` --
+# Traefik still needs to reach this container over that shared network
+# either way) and instead drop a file into the host path behind that
+# provider's `directory:` (find it via `docker inspect traefik --format
+# '{{json .Mounts}}'`, looking for the mount whose Destination matches).
+# Real, confirmed-working content for that file (adjust the Host() domain
+# and, if you renamed the service below, the loadBalancer URL):
+#
+#   http:
+#     routers:
+#       fieldready-api:
+#         rule: "Host(`your-domain-or-sslip.io-host`)"
+#         entrypoints:
+#           - websecure
+#         tls:
+#           certResolver: letsencrypt-http   # use whichever HTTP-01 resolver
+#                                             # your traefik.yml defines --
+#                                             # DNS-01 resolvers need your
+#                                             # domain on that DNS provider,
+#                                             # which a sslip.io host isn't.
+#         service: fieldready-api
+#     services:
+#       fieldready-api:
+#         loadBalancer:
+#           servers:
+#             - url: "http://fieldready-api:3001"   # compose service name --
+#                                                    # resolves via Docker's
+#                                                    # DNS on the shared
+#                                                    # `proxy` network, no
+#                                                    # port publishing needed.
+#
+# `watch: true` on the file provider means Traefik picks this up within
+# seconds, no restart needed. Confirmed end-to-end: real Let's Encrypt cert
+# issued, HTTPS request reached the real Fastify app (not just a health
+# check -- a nonexistent route returned Fastify's own real 404 JSON body).
+#
+# No TLS/proxy setup at all yet, either kind? Delete the `labels:`/
+# `networks:` blocks below and uncomment `ports: ["3001:3001"]` instead --
+# that plain HTTP-on-a-bare-IP setup is what apps/api/HOSTING.md's own
+# testing already proved works end to end, just without a real domain or
+# TLS in front of it.
 #
 # HOST_DOMAIN below needs a real, publicly resolvable hostname pointed at
 # this server's IP before Traefik can get a Let's Encrypt cert for it — a
@@ -59,6 +108,9 @@ services:
     # proxied one, which defeats the point of adding Traefik at all.
     networks:
       - proxy
+    # See the file header comment above before trusting these -- they only
+    # do anything if your Traefik has providers.docker enabled. Keep
+    # `networks:` above regardless of which provider your host uses.
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
