@@ -330,16 +330,26 @@ exception on every page that calls it.
 
 **Supabase-native migration** (`apps/api/README.md`'s own section, `08-supabase-native-
 migration.md`): office auth, template engine reads, job creation/dispatch/closeout,
-compliance (REF/termo/deadlines), and clients/quotes/suppliers/dashboard now read and
-write Supabase directly from `apps/web` (RLS-governed `.from()` calls, or an RPC where
-atomicity/server-side attribution requires one — `fn_current_tenant_id()`/
-`fn_current_app_user_id()` resolve identity server-side so a client can never claim a
-tenant or user it isn't). Deliberately still Fastify-backed: technician device pairing
-(the Supabase-native `technician_device` table's `auth_user_id` makes this an
-Admin-API operation, not a plain insert — see `apps/api/README.md` for the full reasoning
-on why this wasn't force-fit into the RPC pattern the rest of the migration used),
-`/office/technicians` generally, suppliers' receipt upload/confirm and refresh-places,
-and job-detail's photo upload.
+compliance (REF/termo/deadlines), clients/quotes/suppliers/dashboard, and — as of
+§2's completion — technician auth and the entire `/field/*` phone flow now all read
+and write Supabase directly (RLS-governed `.from()` calls, or an RPC where atomicity/
+server-side attribution requires one — `fn_current_tenant_id()`/`fn_current_app_user_id()`
+resolve identity server-side so a client can never claim a tenant or user it isn't).
+Technician device pairing/revocation (`apps/api/src/routes/technicians.ts`) stays a
+Fastify route on purpose — creating/banning a Supabase Auth user needs the
+service_role Admin API, unreachable from a plpgsql RPC — but everything downstream of
+a real paired session (checklist, execution steps, test results, close-out) is fully
+Supabase-native, proven by a live browser PIN login plus `apps/api/test/field-flow-
+proof.mjs`. A real, previously-invisible bug surfaced building this: office `/login`'s
+earlier move to Supabase-only auth had silently 401'd every real user out of every
+still-Fastify route (photo upload, receipts, refresh-places) — fixed by
+`auth/supabase-bridge.ts`, which lets `requireAuth` accept a real Supabase bearer
+token wherever `fr_session` isn't present. Deliberately still Fastify-backed, for
+real structural reasons (binary bytes / third-party API keys): suppliers' receipt
+upload/confirm and refresh-places, and job-detail's/tests page's photo upload.
+`prep-result`'s supplier pickup-plan suggestion card is a known, deliberate gap
+(disabled, not silently broken) — the classic system's own multi-supplier
+optimization algorithm isn't ported yet.
 
 ## What to run in parallel with Phase 1, not after it
 

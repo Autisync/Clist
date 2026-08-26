@@ -1192,3 +1192,73 @@ call shapes the frontend code makes, against the real Supabase project.
 `npm run build` (all three workspaces) and `smoke:web` (23/23, unaffected
 — it exercises the classic Fastify system directly, which this slice
 never touches) both still pass.
+
+## Supabase-native migration — §2: technician-auth, complete
+
+`08-supabase-native-migration.md` §2's own plan, built and proven exactly
+as designed: each paired device is its own Supabase Auth user (synthetic
+email, real 4-digit PIN as the password), `technician_device.auth_user_id`
+the link — closing the last piece of `apps/web`'s auth surface still on
+the classic Fastify system.
+
+**A real bug found before any of this was built, not after:** tracing
+exactly how technician pairing would call the Supabase Admin API surfaced
+that office `/login`'s earlier move to Supabase-only auth (§6 Step 5) had
+silently 401'd every real production user out of every *other*
+still-Fastify route too (photo upload, receipts, refresh-places) — nothing
+in this codebase's own test suites ever exercised a Supabase-session-only
+caller against a still-Fastify route before this. Fixed first, as its own
+piece: `src/auth/supabase-bridge.ts` + `auth/middleware.ts`'s `requireAuth`
+now accept a bearer token as a fallback when no `fr_session` cookie is
+present, verifying it against Supabase's own `/auth/v1/user` endpoint and
+resolving identity through `public.app_user`/`public.technician_device` —
+the same model `fn_current_tenant_id()` uses inside Postgres, just
+resolved from Fastify for the one class of route that isn't a Supabase
+RPC/PostgREST call. `db.ts` gained `withPublicSchema` alongside this: a
+second real bug, found writing the pairing insert itself —
+`fn_technician_device_tenant_guard`'s trigger makes an *unqualified*
+`app_user` reference that resolves via the session's own `search_path`
+regardless of how carefully the outer query schema-qualifies its target
+table, and `withMigrator`'s connection defaults to the classic system's own
+`fastify_api` schema. Proven: `test/bridge-auth-proof.mjs` (8/8).
+
+**Built on top of that**: `rpc_technician_create` (rpc.sql — office-only,
+role-gated the same way `rpc_job_ited_classification_review` is, closing
+the identical "any tenant member can insert any role" gap schema.sql's own
+comment already flagged for `app_user`) creates the technician's row;
+`routes/technicians.ts`'s `POST /technicians/:id/pair` /
+`POST /technicians/devices/:id/revoke` are the two calls that genuinely
+can't be RPCs (creating/banning a Supabase Auth user needs the
+`service_role` Admin API, unreachable from plpgsql — the same reasoning
+that already ruled out `rpc_technician_device_pair` earlier in this
+migration). Two real API details confirmed live against this project's
+actual Admin API before relying on either: this project's password policy
+already accepts a bare 4-digit password for both creation and sign-in (no
+dashboard change needed), and `admin.signOut` needs the device's own live
+JWT (never held server-side) rather than a user id — so revocation is
+`revoked_at` (already fully sufficient on its own, per the proof below)
+plus a best-effort permanent ban via GoTrue's `ban_duration` idiom,
+confirmed against a real test user before shipping it. Proven:
+`test/technician-pairing-proof.mjs` (12/12) — cross-tenant pairing/revoke
+correctly `not_found` rather than leaking, a real device pairs and signs
+in with its real PIN via real Supabase Auth, that session reaches a
+still-Fastify route through the bridge, and revocation both rejects the
+still-valid access token immediately (the `revoked_at` re-check) and
+permanently blocks a future sign-in (the ban).
+
+**`apps/web`'s own field-side port** (every technician-facing page, plus
+`lib/offline-queue.ts`'s dispatch-to-RPC rewrite — the real architectural
+piece that keeps writes and reads pointed at the same schema) is that
+repo's own README's job to document; the short version is `test/field-flow-
+proof.mjs` (17/17) proves the whole chain for real — create → pair → sign
+in → every one of `offline-queue.ts`'s five RPC dispatch branches, called
+with its exact real parameters and independently confirmed in the
+database — plus a live browser click-through (real PIN, real job render,
+a real checklist tap confirmed in the database with `updated_by`
+resolving to the real technician, not just the UI's own optimistic state).
+
+Full regression pass, run together, all green: `build`, `verify-schema.mjs`,
+`verify-seed.mjs`, `proof:phase1-4`, `proof:bridge-auth`,
+`proof:tech-pairing`, `proof:field-flow`, and `apps/web`'s `smoke:web` —
+`smoke.mjs`'s own classic-system technician pairing/login checks still
+pass unchanged, a still-functional, now-parallel path, not a regression.

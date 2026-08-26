@@ -50,25 +50,89 @@ data systems currently coexist on purpose, per
   table's `tenant_id` column had no default, so a plain client-side insert
   omitting it failed RLS outright — fixed at the schema root, not
   per-table).
-- **Deliberately still Fastify-backed:** `/office/technicians` (device
-  pairing needs a real Supabase Auth `auth.users` row provisioned via the
-  Admin API — the "technician/device auth" migration
-  `08-supabase-native-migration.md` §2 already named as separate and more
-  novel, not folded into this slice), plus the specific suppliers actions
-  named above and job-detail's own photo upload. These depend on
-  `fr_session` and will 500 for a user who only has a Supabase session (no
-  Fastify session at all) — the honest, expected state of an in-progress
-  cutover, not a hidden regression.
+- **Deliberately still Fastify-backed:** the specific suppliers actions
+  named above (receipt upload/confirm, Google Places refresh) and
+  job-detail's own photo upload — binary bytes / third-party API keys, the
+  same "structurally can't be an RPC" reasoning REF PDF generation and
+  Veryfi OCR already have. These no longer depend on `fr_session`
+  specifically, though — see the bridge-auth fix below.
+- **A real, previously-invisible bug this migration's own progress
+  surfaced and fixed:** office `/login`'s move to Supabase-only auth meant
+  a real production user had no `fr_session` at all, so every route above
+  (and technician pairing, before it was ported) silently 401'd for them —
+  caught while designing the technician-auth migration below, not
+  reported. `apps/api/src/auth/supabase-bridge.ts` + `requireAuth`'s
+  fallback now accept a real Supabase bearer token on any still-Fastify
+  route, resolving identity through `public.app_user`/
+  `public.technician_device` the same way `fn_current_tenant_id()` does
+  inside Postgres. `apiFetch`/`serverApiFetch` (`lib/api.ts`) attach the
+  token automatically; `fr_session`, where present, still wins — zero
+  regression to the classic system. Proven end to end:
+  `apps/api/test/bridge-auth-proof.mjs`.
 - **Every RPC these pages call is already built and proven** (see
   `apps/api/README.md`'s Supabase-native section) — porting the pages
   above was wiring UI to RPCs that already exist and are already tested,
   plus the handful of genuinely new ones this slice and job-detail's own
   slice each needed.
 
-`GET /manifest.json`, `sw.js`, and everything under `/field/*` are
-completely untouched — technician/device auth is deliberately a separate,
-later slice (design doc §2: "more novel, easier to get right in
-isolation").
+## Technician-auth migration — `/field/*` fully cut over
+
+`08-supabase-native-migration.md` §2's "separate, more novel" slice —
+**done**, not deferred. Every technician-facing page now runs on a real
+Supabase session:
+
+- `/field/login` signs in via `supabase.auth.signInWithPassword` (synthetic
+  device email + the real 4-digit PIN) instead of the classic
+  `POST /auth/technician/login`. The UX is byte-identical — deviceId + a
+  4-digit keypad, same as always; the synthetic email is derived
+  client-side and never shown.
+- `middleware.ts`'s `/field/*` branch now accepts either `fr_session` or a
+  real Supabase session, the exact same either/or lesson the `/office/*`
+  branch already learned above — without it, a real Supabase-only
+  technician session would get bounced straight back to `/field/login`.
+- `field/home`, `.../prep`, `.../site`, `.../tests` read Supabase directly
+  now (`.from("job")`/`.from("job_checklist_item")`, mirroring
+  `office/jobs/[id]/page.tsx`'s own column selections);
+  `fn_current_app_user_id()` — confirmed directly callable as its own RPC —
+  is how a technician session resolves its own identity, no dedicated
+  whoami route needed. `.../voice` and `.../done` needed no changes.
+- **`lib/offline-queue.ts` is the real architectural piece underneath all
+  of this.** `flushQueue()` used to batch every queued mutation through the
+  classic system's own `POST /sync/mutations` — a real risk the moment any
+  field page's reads moved to Supabase-native `public.job` while writes
+  kept landing in the classic system's disconnected schema: every mutation
+  would "succeed" (a real 200, from a real but unrelated endpoint) while
+  changing nothing either the technician or the office would ever see.
+  `applyMutation()` now dispatches each of the five mutation types to its
+  own already-proven RPC directly (the exact parameter shapes
+  `job-detail.tsx`'s office-side calls already use).
+- `/office/technicians` is now wired to the real backend
+  (`rpc_technician_create` + `apps/api/src/routes/technicians.ts`'s
+  pairing/revoke, both service_role-Admin-API-backed and necessarily
+  Fastify — no RPC can create/ban a Supabase Auth user) — only flipped
+  once this whole list was done, so a newly-paired technician could
+  actually log in.
+- **Known, deliberate gap:** `prep-result`'s supplier pickup-plan card is
+  disabled, not silently broken. `GET /jobs/:id/pickup-plan` is
+  classic-schema-only and would 404 forever against a Supabase-native job
+  id; porting the full multi-supplier coverage/open-now/price algorithm
+  (`domain/sourcing.ts`'s `pickupPlan()`, a real optimization, not a
+  filter) to a Supabase RPC is real, separate follow-up work.
+
+Proven three ways: `apps/api/test/field-flow-proof.mjs` (17/17 — the real
+create → pair → sign-in chain, then every `applyMutation()` dispatch
+branch called with its real parameters and independently confirmed in the
+database); a live browser click-through (real PIN entry on the real
+keypad, real job/checklist rendered, a real checklist tap independently
+confirmed in the database with `updated_by` resolving to the real
+technician); and the full existing regression suite (`build`,
+`proof:phase1-4`, `proof:bridge-auth`, `proof:tech-pairing`, `smoke:web`)
+staying green throughout — `smoke.mjs`'s own classic-system technician
+checks still pass unchanged, exercising a still-functional, now-parallel
+path, not a regression.
+
+`GET /manifest.json` and `sw.js` are untouched. `/field/*` is now fully
+cut over too — see "Technician-auth migration" above.
 
 ## Running it
 
@@ -81,10 +145,13 @@ npm run dev:web     # terminal 2 — http://127.0.0.1:3000
 
 Demo logins, once both are up: office at `/login`
 (`rex@antenas-piloto.pt` / `proof-pass-123`, the same Phase 1 fixture
-`apps/api/README.md` uses); technician at `/field/login` needs a paired
-device first — either through `/office/technicians` in the UI, or the same
-`POST /auth/technician/pair` call `apps/api/README.md`/the proof scripts
-use directly.
+`apps/api/README.md` uses — this is the classic-system fixture; a real
+Supabase-native office user needs `apps/api/supabase/provision-tenant.mjs`
+instead). Technician at `/field/login` needs a real technician + paired
+device first: `/office/technicians` in the UI (create a technician, then
+"Emparelhar dispositivo" — shows the real device id + PIN exactly once),
+or the same `rpc_technician_create` + `POST /technicians/:id/pair` calls
+`apps/api/test/technician-pairing-proof.mjs` uses directly.
 
 ## How it talks to the API
 
