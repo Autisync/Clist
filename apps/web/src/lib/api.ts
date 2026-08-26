@@ -13,6 +13,21 @@
  *     so this reads them from next/headers' cookies() and attaches the
  *     fr_session cookie by hand. Any server-side data fetch MUST use this
  *     variant, not apiFetch — that's the #1 way this kind of app breaks.
+ *
+ * Both ALSO attach `Authorization: Bearer <supabase access token>` when a
+ * real Supabase session exists — a real, previously-invisible gap: office
+ * `/login` (§6 Step 5) signs in via Supabase only and never sets fr_session
+ * at all, so every real production office user got a silent 401 from every
+ * still-Fastify route (photo upload, receipts, refresh-places, technician
+ * pairing) the moment fr_session stopped existing. apps/api's requireAuth
+ * (auth/middleware.ts) now accepts either — this is the other half of that
+ * fix. fr_session, where present, still takes priority (unchanged classic-
+ * system behavior, zero regression); the bearer token is what makes a
+ * Supabase-only caller work at all. `./supabase/client` is "use client" —
+ * imported dynamically inside apiFetch only, same reasoning serverApiFetch's
+ * own dynamic `next/headers` import already gives, so this shared module
+ * doesn't drag a client-only boundary into serverApiFetch's Server Component
+ * callers.
  */
 
 export class ApiError extends Error {
@@ -56,6 +71,16 @@ export async function apiFetch<T = unknown>(
   const isFormData =
     typeof FormData !== "undefined" && options.body instanceof FormData;
 
+  // See file header comment — dynamic import keeps this "use client" module
+  // out of serverApiFetch's own bundle. getSession() reads the already-
+  // parsed session from the SSR cookie helper's in-memory store; it does
+  // not itself make a network call unless the access token is expired and
+  // needs a refresh, so this doesn't add a round trip to the common case.
+  const { createSupabaseBrowserClient } = await import("./supabase/client");
+  const {
+    data: { session },
+  } = await createSupabaseBrowserClient().auth.getSession();
+
   // Only set content-type: application/json when there actually is a body.
   // Some routes take no request body at all (POST /quotes/:id/accept,
   // POST /quotes/:id/create-job) — sending that header with an empty body
@@ -65,13 +90,12 @@ export async function apiFetch<T = unknown>(
   const res = await fetch(toUrl(path), {
     ...options,
     credentials: "same-origin",
-    headers:
-      isFormData || options.body === undefined
+    headers: {
+      ...(session ? { authorization: `Bearer ${session.access_token}` } : {}),
+      ...(isFormData || options.body === undefined
         ? options.headers
-        : {
-            "content-type": "application/json",
-            ...options.headers,
-          },
+        : { "content-type": "application/json", ...options.headers }),
+    },
   });
 
   const body = await parseBody(res);
@@ -166,6 +190,28 @@ export async function serverApiFetch<T = unknown>(
   const sessionCookie = cookieStore.get("fr_session");
   const incomingHeaders = await nextHeaders();
 
+  // See file header comment — real Supabase session, forwarded as a bearer
+  // token for the same reason apiFetch does above. Deliberately NOT
+  // `./supabase/server`'s createSupabaseServerClient() here, even via a
+  // dynamic import: that module statically imports next/headers at ITS OWN
+  // top level, and Next's build traces a dynamic import's own static
+  // imports regardless — confirmed the hard way, this exact substitution
+  // broke the build with "You're importing a component that needs
+  // next/headers... not supported in the pages/ directory" from a Client
+  // Component path (SyncStatus.tsx -> offline-queue.ts -> this file).
+  // @supabase/ssr's createServerClient has no such import (it takes a
+  // cookie adapter as a plain argument), so constructing it inline here,
+  // reusing the cookieStore already read above, avoids the transitive
+  // boundary entirely instead of duplicating a second copy of ./server.ts.
+  const { createServerClient } = await import("@supabase/ssr");
+  const { supabaseUrl, supabaseAnonKey } = await import("./supabase/env");
+  const supabase = createServerClient(supabaseUrl(), supabaseAnonKey(), {
+    cookies: { getAll: () => cookieStore.getAll(), setAll: () => {} },
+  });
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
   const isFormData =
     typeof FormData !== "undefined" && options.body instanceof FormData;
 
@@ -182,6 +228,9 @@ export async function serverApiFetch<T = unknown>(
 
   if (sessionCookie) {
     requestHeaders["cookie"] = `fr_session=${sessionCookie.value}`;
+  }
+  if (session) {
+    requestHeaders["authorization"] = `Bearer ${session.access_token}`;
   }
 
   // Server-side fetches need an absolute URL — there's no browser origin to

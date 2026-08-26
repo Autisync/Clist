@@ -12,7 +12,8 @@
     "proof": "node --env-file=.env test/phase1-proof.mjs",
     "proof:phase2": "node --env-file=.env test/phase2-proof.mjs",
     "proof:phase3": "node --env-file=.env test/phase3-proof.mjs",
-    "proof:phase4": "node --env-file=.env test/phase4-proof.mjs"
+    "proof:phase4": "node --env-file=.env test/phase4-proof.mjs",
+    "proof:bridge-auth": "node --env-file=.env test/bridge-auth-proof.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.5",
