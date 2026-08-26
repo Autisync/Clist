@@ -16,7 +16,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Briefcase, Store, Users, Receipt, Smartphone } from "lucide-react";
+import { LayoutDashboard, Briefcase, Store, Users, Receipt, Smartphone, LifeBuoy } from "lucide-react";
 
 const NAV = [
   { href: "/office", label: "Dashboard", icon: LayoutDashboard },
@@ -25,6 +25,7 @@ const NAV = [
   { href: "/office/clients", label: "Clientes", icon: Users },
   { href: "/office/quotes", label: "Orçamentos", icon: Receipt },
   { href: "/office/technicians", label: "Técnicos", icon: Smartphone },
+  { href: "/office/support", label: "Suporte", icon: LifeBuoy },
 ];
 
 export function OfficeNav() {

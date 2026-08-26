@@ -19,7 +19,12 @@ export function AdminLogoutButton() {
     try {
       await createSupabaseBrowserClient().auth.signOut();
     } finally {
-      window.location.href = "/admin/login";
+      // /admin-login, not /admin/login — it lives outside the /admin/*
+      // tree entirely (middleware.ts's own comment on why). Redirecting
+      // to /admin/login previously worked by accident: middleware still
+      // caught the post-signout /admin/* request and bounced it here
+      // anyway, just via an extra hop. Fixed to go straight there.
+      window.location.href = "/admin-login";
     }
   }
 

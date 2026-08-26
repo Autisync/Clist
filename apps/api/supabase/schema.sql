@@ -328,6 +328,29 @@ comment on function fn_is_platform_admin() is
 revoke execute on function fn_is_platform_admin() from public;
 grant execute on function fn_is_platform_admin() to authenticated;
 
+-- Support tickets (§11a below) need this: a platform admin replying to a
+-- ticket has to be attributed by their own platform_admin.id, the same way
+-- fn_current_app_user_id() attributes a tenant caller — same SECURITY
+-- INVOKER reasoning as fn_is_platform_admin() just above (no bootstrapping
+-- circularity: this query is identical to platform_admin_self_read's own
+-- USING clause, so the caller's own row is already visible to it).
+create or replace function fn_current_platform_admin_id()
+returns uuid
+language sql
+stable
+as $$
+  select id from platform_admin where auth_user_id = auth.uid();
+$$;
+
+comment on function fn_current_platform_admin_id() is
+  'The platform-admin sibling of fn_current_app_user_id() — resolves the '
+  'CURRENT caller''s own platform_admin.id, null if they are not one. Used '
+  'as support_ticket_message.sender_platform_admin_id''s column default so '
+  'a reply''s attribution is never client-supplied.';
+
+revoke execute on function fn_current_platform_admin_id() from public;
+grant execute on function fn_current_platform_admin_id() to authenticated;
+
 -- ============================================================================
 -- 3. Template engine — unchanged from 03-schema.sql §4/§4a except RLS (§6 below)
 -- ============================================================================
@@ -767,6 +790,106 @@ create table job_execution_step_completion (
 );
 
 -- ============================================================================
+-- 11a. Support tickets — a tenant's own line to FieldReady's operators
+-- (platform_admin, §2b), the first real cross-tenant-visible data this
+-- schema has beyond the system-template carve-out.
+-- ============================================================================
+
+create table support_ticket (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenant(id),
+  -- Defaults to fn_current_app_user_id(), same reasoning support_ticket_
+  -- message.sender_app_user_id already gives below: a client-supplied
+  -- created_by would let any tenant member file a ticket attributed to a
+  -- DIFFERENT colleague, the same class of spoof this codebase's own
+  -- established principle (never trust client-supplied attribution)
+  -- already closes everywhere else.
+  created_by    uuid not null references app_user(id) default fn_current_app_user_id(),
+  subject       text not null,
+  body          text not null,
+  status        text not null default 'open'
+                  check (status in ('open', 'in_progress', 'resolved', 'closed')),
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+comment on table support_ticket is
+  'Always created by a tenant''s own office/owner user (created_by) — never '
+  'by a platform admin. support_ticket_message below is where both sides '
+  'participate in the resulting thread.';
+
+create table support_ticket_message (
+  id                        uuid primary key default gen_random_uuid(),
+  ticket_id                 uuid not null references support_ticket(id) on delete cascade,
+  -- Populated by fn_support_ticket_message_tenant_guard below, always —
+  -- never client-supplied, never defaulted from the caller's own identity.
+  -- fn_current_tenant_id() would be null for exactly the caller who most
+  -- needs this column right (a platform admin has no tenant of their own
+  -- at all), so unlike every table in §12's tenant_tables loop, this one's
+  -- tenant_id has to be derived from the PARENT ROW, not the CALLER.
+  tenant_id                 uuid not null,
+  -- Exactly one of these two is ever non-null (CHECK below) — the sender
+  -- is either a tenant's own office user replying to their own ticket, or
+  -- a platform admin replying across tenants. Two real FKs, not a bare
+  -- sender_type flag + one untyped id column, so referential integrity is
+  -- enforced regardless of which kind of sender it is — the same
+  -- preference this schema already has elsewhere for a real constraint
+  -- over a discriminator that could silently drift out of sync with what
+  -- it's supposed to describe.
+  sender_app_user_id        uuid references app_user(id) default fn_current_app_user_id(),
+  sender_platform_admin_id  uuid references platform_admin(id) default fn_current_platform_admin_id(),
+  body                      text not null,
+  created_at                timestamptz not null default now(),
+  check (num_nonnulls(sender_app_user_id, sender_platform_admin_id) = 1)
+);
+
+comment on column support_ticket_message.sender_app_user_id is
+  'Defaults to fn_current_app_user_id() — resolves null for a platform '
+  'admin caller (they have no app_user row at all), which is exactly what '
+  'lets a plain insert with neither sender column specified correctly '
+  'attribute itself either way, no RPC needed.';
+
+comment on column support_ticket_message.sender_platform_admin_id is
+  'Defaults to fn_current_platform_admin_id() — resolves null for a '
+  'tenant office/technician caller. Known, deliberate limitation: someone '
+  'who is genuinely BOTH a platform admin and a tenant office user (real '
+  'and explicitly anticipated — provision-platform-admin.mjs''s own '
+  'comment on this) would have both defaults resolve non-null on the same '
+  'insert, failing the CHECK below outright rather than silently '
+  'misattributing to whichever one happened to be checked first. Narrow '
+  'enough a case not to warrant an explicit role-select mechanism yet; if '
+  'this is ever hit for real, the fix is letting the caller explicitly '
+  'pass one sender column (still validated server-side against their own '
+  'real identity), not trusting either default blindly.';
+
+create or replace function fn_support_ticket_message_tenant_guard()
+returns trigger as $$
+declare
+  v_ticket_tenant_id uuid;
+begin
+  -- SECURITY INVOKER (no "security definer" below) is deliberate: this
+  -- SELECT runs under the CALLER's own RLS on support_ticket, which is
+  -- exactly what makes this fail safe — a tenant member pointing ticket_id
+  -- at a DIFFERENT tenant's ticket can't see that row at all (RLS hides
+  -- it), so v_ticket_tenant_id comes back null and the insert is rejected
+  -- as "ticket does not exist" — the same not-found-not-a-leak shape
+  -- every RPC in this codebase already uses for a cross-tenant attempt. A
+  -- platform admin's own additive SELECT policy on support_ticket is what
+  -- lets THEIR version of this same query see any tenant's ticket.
+  select tenant_id into v_ticket_tenant_id from support_ticket where id = new.ticket_id;
+  if v_ticket_tenant_id is null then
+    raise exception 'support_ticket_message: ticket % does not exist', new.ticket_id;
+  end if;
+  new.tenant_id := v_ticket_tenant_id;
+  return new;
+end;
+$$ language plpgsql;
+
+create trigger trg_support_ticket_message_tenant_guard
+  before insert or update on support_ticket_message
+  for each row execute function fn_support_ticket_message_tenant_guard();
+
+-- ============================================================================
 -- 12. Row-level security — the actual point of this file.
 --
 -- No role bootstrap here (03-schema.sql §1) — Supabase already provides
@@ -785,10 +908,16 @@ declare
     'client', 'quote', 'quote_line', 'job', 'job_checklist_item', 'van_audit',
     'equipment', 'job_test_result', 'ref_document', 'termo_responsabilidade',
     'compliance_deadline', 'job_closeout', 'follow_up_action', 'job_photo',
-    'applied_mutation', 'job_execution_step_completion'
-    -- same 22-table list as 03-schema.sql §12 — if you add a table there,
-    -- add it here too, or verify-schema-supabase.mjs's RLS-coverage check
-    -- should catch the gap.
+    'applied_mutation', 'job_execution_step_completion', 'support_ticket'
+    -- 03-schema.sql §12's original 22-table list, plus support_ticket
+    -- (§11a) — if you add a table there, add it here too, or
+    -- verify-schema-supabase.mjs's RLS-coverage check should catch the
+    -- gap. support_ticket_message is deliberately NOT in this list — its
+    -- tenant_id is trigger-derived from its parent ticket, not the
+    -- caller's own identity (§11a's own comment on that column), so this
+    -- loop's generic `tenant_id = fn_current_tenant_id()` policy would be
+    -- actively wrong for a platform admin's own reply; it gets its own
+    -- hand-written RLS right after this block instead.
   ];
 begin
   foreach t in array tenant_tables loop
@@ -816,6 +945,80 @@ begin
     execute format('alter table %I alter column tenant_id set default fn_current_tenant_id()', t);
   end loop;
 end $$;
+
+-- support_ticket: the loop above already gave it the standard tenant-scoped
+-- policy (select/insert/update/delete for the caller's own tenant) plus the
+-- tenant_id default. Additive on top, same pattern as tenant's own
+-- platform_admin_read_all_tenants policy (§2b) — a platform admin can read
+-- and update (change status) every tenant's tickets, never insert one
+-- (schema.sql's own comment on the table: always created by a tenant's own
+-- user, never an admin), never delete one.
+create policy support_ticket_platform_admin_read on support_ticket
+  for select
+  using (fn_is_platform_admin());
+create policy support_ticket_platform_admin_update on support_ticket
+  for update
+  using (fn_is_platform_admin());
+
+-- support_ticket_message: NOT in the tenant_tables loop above (§11a's own
+-- comment on why) — hand-written RLS mirroring the same tenant-scoped +
+-- additive-admin shape everything else uses, just without the loop's
+-- generic tenant_id default (this table's tenant_id always comes from
+-- fn_support_ticket_message_tenant_guard's trigger instead, §11a).
+--
+-- INSERT policies below check sender_app_user_id/sender_platform_admin_id
+-- against the caller's own resolved identity, not just "is one of them
+-- non-null" — a real gap found reviewing this before it ever reached the
+-- real project: the column DEFAULTs (§11a) only protect the case where a
+-- client OMITS the field. Nothing about a bare `tenant_id = fn_current_
+-- tenant_id()` check stops a tenant member from EXPLICITLY setting
+-- sender_platform_admin_id to some real admin's id in the same insert —
+-- the CHECK constraint only requires exactly one of the two to be
+-- non-null, not that the non-null one is actually the caller. Split into
+-- separate SELECT/INSERT policies (not one bare all-commands policy) so
+-- this stricter check applies only where it matters, and so UPDATE/DELETE
+-- stay ungranted entirely — a sent reply is immutable, matching every
+-- real ticketing system's own norm, not a data model this schema needs
+-- to support editing after the fact.
+alter table support_ticket_message enable row level security;
+alter table support_ticket_message force row level security;
+
+create policy support_ticket_message_tenant_read on support_ticket_message
+  for select
+  using (tenant_id = fn_current_tenant_id());
+
+create policy support_ticket_message_tenant_insert on support_ticket_message
+  for insert
+  with check (
+    tenant_id = fn_current_tenant_id()
+    and sender_app_user_id is not distinct from fn_current_app_user_id()
+    and sender_platform_admin_id is not distinct from fn_current_platform_admin_id()
+  );
+
+create policy support_ticket_message_platform_admin_read on support_ticket_message
+  for select
+  using (fn_is_platform_admin());
+
+create policy support_ticket_message_platform_admin_insert on support_ticket_message
+  for insert
+  with check (
+    fn_is_platform_admin()
+    and sender_app_user_id is null
+    and sender_platform_admin_id = fn_current_platform_admin_id()
+  );
+
+grant select, insert on support_ticket_message to authenticated;
+
+-- job: additive platform-admin read, same shape as tenant's own
+-- platform_admin_read_all_tenants (§2b) and support_ticket's
+-- _platform_admin_read above — cross-tenant job counts/statuses for the
+-- admin dashboard (admin/page.tsx). Read-only: a platform admin has no
+-- business editing a tenant's own job data, only observing aggregates
+-- over it, so there is deliberately no matching _update/_insert/_delete
+-- policy here the way support_ticket has one for status changes.
+create policy job_platform_admin_read on job
+  for select
+  using (fn_is_platform_admin());
 
 -- fn_current_tenant_id() is security definer, owned by whichever role applies
 -- this migration (the direct-connection superuser role) — its elevated read
@@ -1033,6 +1236,8 @@ create index idx_checklist_job on job_checklist_item (job_id);
 create index idx_supplier_price_item on supplier_price (tenant_id, item_id);
 create index idx_compliance_deadline_due on compliance_deadline (tenant_id, status, due_on);
 create index idx_template_version_active on template_version (template_id, status);
+create index idx_support_ticket_tenant_status on support_ticket (tenant_id, status);
+create index idx_support_ticket_message_ticket on support_ticket_message (ticket_id);
 
 -- ============================================================================
 -- End of schema. No seed data here yet (parallels 03-schema.sql/seed.sql's

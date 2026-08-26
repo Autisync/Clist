@@ -19,6 +19,8 @@
     "proof:tech-pairing": "npm run proof:tech-pairing --workspace=apps/api",
     "proof:field-flow": "npm run proof:field-flow --workspace=apps/api",
     "proof:platform-admin": "npm run proof:platform-admin --workspace=apps/api",
+    "proof:support-tickets": "npm run proof:support-tickets --workspace=apps/api",
+    "proof:admin-analytics": "npm run proof:admin-analytics --workspace=apps/api",
     "smoke:web": "node --env-file=apps/api/.env apps/web/test/smoke.mjs",
     "verify:schema": "node verify-schema.mjs 03-schema.sql",
     "verify:seed": "node verify-seed.mjs 03-schema.sql seed.sql",

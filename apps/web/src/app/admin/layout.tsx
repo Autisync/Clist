@@ -1,14 +1,16 @@
 import { Shield } from "lucide-react";
 import { AdminLogoutButton } from "./_components/admin-logout-button";
+import { AdminNav } from "./_components/admin-nav";
 
 /*
  * Platform-admin shell — deliberately visually distinct from
  * OfficeLayout (dark zinc-950 + amber accent vs. office's zinc-900 +
  * cyan) so a screenshot or a glance at an open tab is never ambiguous
  * about which surface — a real tenant's back office, or FieldReady's own
- * operator console — is on screen. No nav tabs yet (one page, tenant
- * onboarding); add a tab row here the same way OfficeNav does once a
- * second /admin/* page exists.
+ * operator console — is on screen. AdminNav added alongside the tickets
+ * page (support-ticket system) now that a second /admin/* page exists —
+ * same "Server Component parent, Client Component leaf for
+ * usePathname()" split OfficeNav already uses.
  */
 export default function AdminLayout({
   children,
@@ -27,6 +29,7 @@ export default function AdminLayout({
           </div>
           <AdminLogoutButton />
         </div>
+        <AdminNav />
       </header>
 
       <main className="max-w-4xl mx-auto px-4 py-5">{children}</main>

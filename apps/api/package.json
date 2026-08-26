@@ -16,7 +16,9 @@
     "proof:bridge-auth": "node --env-file=.env test/bridge-auth-proof.mjs",
     "proof:tech-pairing": "node --env-file=.env test/technician-pairing-proof.mjs",
     "proof:field-flow": "node --env-file=.env test/field-flow-proof.mjs",
-    "proof:platform-admin": "node --env-file=.env test/platform-admin-proof.mjs"
+    "proof:platform-admin": "node --env-file=.env test/platform-admin-proof.mjs",
+    "proof:support-tickets": "node --env-file=.env test/support-tickets-proof.mjs",
+    "proof:admin-analytics": "node --env-file=.env test/admin-analytics-proof.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.5",
