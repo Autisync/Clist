@@ -217,6 +217,41 @@ export async function withTenant<T>(
   }
 }
 
+/** Same trusted, RLS-bypassing connection as withMigrator, but for queries
+ * that touch `public.*` Supabase-native tables and need this connection's
+ * OWN search_path (fastify_api, set at connection level — getConnectionConfig's
+ * `-c search_path=...` startup option) to not shadow unqualified references
+ * inside anything those queries fire. Found the hard way, not anticipated:
+ * fn_technician_device_tenant_guard (schema.sql) does an unqualified
+ * `select tenant_id from app_user where id = new.user_id` inside a trigger
+ * on technician_device — correct for its normal callers (PostgREST
+ * connections, always search_path=public), but silently resolves to THIS
+ * pool's own fastify_api.app_user instead when the trigger fires from a
+ * withMigrator query, however carefully the query itself schema-qualifies
+ * `public.technician_device` — the trigger runs on the SAME session, and
+ * search_path is a session-level setting a schema-qualified target table
+ * name does nothing to override for code running inside it. Schema-
+ * qualifying the INSERT was not enough; the session's search_path itself
+ * has to actually be `public` for the duration, which needs a dedicated
+ * client (SET LOCAL is transaction-scoped), not withMigrator's bare
+ * pool.query() (each call may land on a different pooled connection). */
+export async function withPublicSchema<T>(fn: (db: DbTx) => Promise<T>): Promise<T> {
+  const pool = await getDb();
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await client.query(`set local search_path = public;`);
+    const result = await fn(wrapAsDbTx(client));
+    await client.query("commit");
+    return result;
+  } catch (err) {
+    await client.query("rollback").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 /** The one intentionally-elevated path in this codebase: login has no
  * tenant context yet (that's what it's resolving), so the credential
  * lookup by email necessarily runs before RLS has anything to scope by.

@@ -1467,6 +1467,69 @@ comment on function rpc_job_ited_classification_review(uuid, text, text) is
 revoke execute on function rpc_job_ited_classification_review(uuid, text, text) from public;
 grant execute on function rpc_job_ited_classification_review(uuid, text, text) to authenticated;
 
+-- ============================================================================
+-- Technician-auth migration (08-supabase-native-migration.md §2): the office
+-- half of adding a technician. Deliberately NOT the pairing step itself --
+-- creating the paired device's Supabase Auth user needs the service_role
+-- Admin API, which no RPC can reach (Admin API is HTTP-only, never callable
+-- from plpgsql) -- same reasoning that already ruled out an RPC for this
+-- earlier in the migration (see rpc_technician_device_pair's own removal,
+-- README's Supabase-native section). This function only creates the
+-- technician's app_user row -- the prerequisite a pairing call needs to
+-- point at, and the piece that genuinely IS a plain RLS-scoped insert with
+-- no service_role/Admin API involved.
+--
+-- Role-gated (technician cannot create another technician) for the same
+-- reason every other office-only write in this file checks role explicitly
+-- rather than trusting RLS's table-level grants alone -- schema.sql's own
+-- comment on the job table names this exact gap for ited_classification;
+-- app_user has the identical gap (any tenant member can currently insert
+-- any role via a plain .from('app_user').insert(...), including 'owner').
+create or replace function rpc_technician_create(p_full_name text, p_phone text default null)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_tenant_id uuid;
+  v_caller_app_user_id uuid;
+  v_caller_role text;
+  v_row record;
+begin
+  v_tenant_id := fn_current_tenant_id();
+  if v_tenant_id is null then
+    raise exception 'rpc_technician_create: no tenant context resolved for this session';
+  end if;
+
+  if p_full_name is null or p_full_name !~ '\S' then
+    raise exception 'rpc_technician_create: full_name must be non-empty';
+  end if;
+
+  v_caller_app_user_id := fn_current_app_user_id();
+  select role into v_caller_role from app_user where id = v_caller_app_user_id;
+  if v_caller_role = 'technician' then
+    raise exception 'rpc_technician_create: creating a technician is office-only';
+  end if;
+
+  insert into app_user (tenant_id, role, full_name, phone)
+  values (v_tenant_id, 'technician', p_full_name, p_phone)
+  returning id, full_name into v_row;
+
+  return jsonb_build_object('kind', 'ok', 'id', v_row.id, 'full_name', v_row.full_name);
+end;
+$$;
+
+comment on function rpc_technician_create(text, text) is
+  'Technician-auth migration, office-half. SECURITY INVOKER — RLS on '
+  'app_user scopes the insert to the caller''s own tenant; the explicit '
+  'role check is this function''s own belt-and-suspenders enforcement '
+  '(schema.sql''s own comment on the job table already flags that RLS '
+  'alone does not yet split office-only writes from a plain tenant-member '
+  'grant). Device pairing (the Admin-API half) is a Fastify route, not '
+  'this function — see apps/api/src/routes/technicians.ts.';
+
+revoke execute on function rpc_technician_create(text, text) from public;
+grant execute on function rpc_technician_create(text, text) to authenticated;
+
 -- Deliberately NOT here: technician device pairing (Fastify's POST
 -- /auth/technician/pair). A first attempt at rpc_technician_device_pair()
 -- assumed pairing was a plain "insert a row with a hashed PIN" write, like

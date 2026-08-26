@@ -55,8 +55,14 @@ function fail(label, detail) { failures++; console.log(`  FAIL ${label} -> ${det
 // ---- bearer-token HTTP client (no cookie jar at all — the whole point) ----
 
 async function callBearer(method, p, token, body) {
-  const headers = { "content-type": "application/json" };
+  // content-type: application/json only when there IS a body -- Fastify's
+  // JSON parser 500s on an empty body with that header set regardless of
+  // method (apps/web/src/lib/api.ts's own matching comment on this exact
+  // footgun) -- not hit by this script's own calls today (every POST here
+  // has a body), fixed anyway so a future addition doesn't reintroduce it.
+  const headers = {};
   if (token) headers.authorization = `Bearer ${token}`;
+  if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(BASE + p, {
     method,
     headers,

@@ -19,6 +19,7 @@ import { refRoutes } from "./routes/ref.js";
 import { termoRoutes } from "./routes/termo.js";
 import { complianceRoutes } from "./routes/compliance.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { technicianRoutes } from "./routes/technicians.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   await getDb(); // boot/migrate before accepting requests
@@ -55,6 +56,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(termoRoutes);
   await app.register(complianceRoutes);
   await app.register(dashboardRoutes);
+  await app.register(technicianRoutes);
 
   return app;
 }
