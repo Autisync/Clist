@@ -1,9 +1,30 @@
 /*
  * Offline outbox — architecture §4 Option B: local outbox + background sync
- * loop, client-generated mutation ids. This is the client-side half of the
- * wire contract apps/api/src/routes/sync.ts already implements and proves
- * idempotent over real HTTP (POST /sync/mutations, keyed on
- * client_mutation_id; applied/already_applied/rejected per mutation).
+ * loop, client-generated mutation ids.
+ *
+ * Technician-auth migration (08-supabase-native-migration.md §2):
+ * flushQueue() now calls each pending mutation's own already-proven RPC
+ * directly (supabase.rpc(...)) instead of POSTing the whole batch to the
+ * classic system's POST /sync/mutations — a real, easy-to-miss consistency
+ * risk this file's own previous version would have hit the moment any
+ * field page's READS moved to Supabase-native public.job while its WRITES
+ * kept landing in the classic system's own, completely separate schema:
+ * every mutation would have "succeeded" (200 from a real, working, but
+ * disconnected endpoint) while doing nothing to the data any read path
+ * (technician's own or the office's) actually shows. applyMutation() below
+ * maps each of the five mutation types to the exact RPC + parameter names
+ * apps/web/src/app/office/jobs/[id]/_components/job-detail.tsx already
+ * calls and already has proven (rpc_checklist_item_update,
+ * rpc_execution_step_complete, rpc_test_result_record, rpc_closeout_submit,
+ * rpc_van_audit_record) — reusing those exact shapes rather than
+ * re-deriving them from packages/core's Zod schemas independently, so any
+ * future drift between the two call sites is one to notice, not two to
+ * keep in sync by hand.
+ *
+ * Each mutation is its own RPC call now, not one atomic batch — the same
+ * per-mutation independence apps/api/src/routes/sync.ts's own batch
+ * handler already had (one rejected mutation in a batch never blocked the
+ * others), just without the batching itself.
  *
  * One IndexedDB database, "fieldready-outbox", holds two object stores:
  *   - "mutations": the outbox itself (this file).
@@ -20,8 +41,8 @@
 
 import { useSyncExternalStore } from "react";
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
-import type { SyncMutation, SyncMutationResult, SyncMutationsResponse } from "@fieldready/core";
-import { apiFetch } from "./api";
+import type { SyncMutation, SyncMutationResult } from "@fieldready/core";
+import { createSupabaseBrowserClient } from "./supabase/client";
 
 export type OutboxStatus = "pending" | "synced" | "failed";
 
@@ -183,12 +204,77 @@ export async function pendingCount(): Promise<number> {
   return db.countFromIndex(MUTATIONS_STORE, "by-status", "pending");
 }
 
+// Maps one queued mutation to its already-proven RPC call — see file
+// header comment for why these exact parameter names, not re-derived from
+// packages/core's Zod schemas. Throws (network/unexpected error) rather
+// than returning a result when the call itself failed to complete at all
+// (offline, timeout) — flushQueue()'s per-row try/catch below is what
+// leaves that row "pending" for the next attempt; a real rejection from
+// the RPC itself (e.g. a validation failure) comes back as a normal
+// {status: "rejected", reason} result, not a thrown error, same
+// distinction apps/api/src/routes/sync.ts's own applied_mutation results
+// already draw.
+async function applyMutation(mutation: SyncMutation): Promise<SyncMutationResult> {
+  const supabase = createSupabaseBrowserClient();
+  const { client_mutation_id, job_id } = mutation;
+
+  const { data, error } = await (() => {
+    switch (mutation.type) {
+      case "checklist_item.update":
+        return supabase.rpc("rpc_checklist_item_update", {
+          p_client_mutation_id: client_mutation_id,
+          p_job_id: job_id,
+          p_item_id: mutation.payload.item_id,
+          p_status: mutation.payload.status,
+        });
+      case "execution_step.complete":
+        return supabase.rpc("rpc_execution_step_complete", {
+          p_client_mutation_id: client_mutation_id,
+          p_job_id: job_id,
+          p_step: mutation.payload.step,
+        });
+      case "test_result.record":
+        return supabase.rpc("rpc_test_result_record", {
+          p_client_mutation_id: client_mutation_id,
+          p_job_id: job_id,
+          p_network_type: mutation.payload.network_type,
+          p_location_label: mutation.payload.location_label,
+          p_test_code: mutation.payload.test_code,
+          p_measured_value: mutation.payload.measured_value,
+          p_unit: mutation.payload.unit ?? null,
+          p_limit_ref: mutation.payload.limit_ref ?? null,
+          p_capture_source: mutation.payload.capture_source,
+          p_raw_capture_file: mutation.payload.raw_capture_file ?? null,
+          p_instrument_id: mutation.payload.instrument_id ?? null,
+        });
+      case "closeout.submit":
+        return supabase.rpc("rpc_closeout_submit", {
+          p_client_mutation_id: client_mutation_id,
+          p_job_id: job_id,
+          p_first_time_fix: mutation.payload.first_time_fix,
+          p_technician_voice_note_file: mutation.payload.technician_voice_note_file ?? null,
+          p_technician_note_transcript: mutation.payload.technician_note_transcript,
+          p_client_signature_file: mutation.payload.client_signature_file ?? null,
+        });
+      case "van_audit.record":
+        return supabase.rpc("rpc_van_audit_record", {
+          p_client_mutation_id: client_mutation_id,
+          p_van_label: mutation.payload.van_label,
+          p_issues: mutation.payload.issues,
+        });
+    }
+  })();
+
+  if (error) throw error;
+  return data as SyncMutationResult;
+}
+
 /**
- * Flush all pending mutations to the API in one batch (POST
- * /sync/mutations), then reconcile each row by the server's per-mutation
- * result: applied/already_applied -> "synced", rejected -> "failed" with
- * the reason. A network failure (offline, timeout, non-2xx from apiFetch)
- * is caught here and leaves every row untouched as "pending" for the next
+ * Flush all pending mutations, each via its own RPC call (see file header
+ * comment for why this replaced one batch POST), then reconcile each row
+ * by its own result: applied/already_applied -> "synced", rejected ->
+ * "failed" with the reason. A row whose RPC call itself failed to complete
+ * (offline, timeout, unexpected error) is left "pending" for the next
  * attempt — this function must never throw up past itself.
  */
 export async function flushQueue(): Promise<void> {
@@ -198,36 +284,23 @@ export async function flushQueue(): Promise<void> {
 
   setSyncing(true);
   try {
-    let response: SyncMutationsResponse;
-    try {
-      response = await apiFetch<SyncMutationsResponse>("/sync/mutations", {
-        method: "POST",
-        body: JSON.stringify({
-          mutations: pending.map(({ status: _status, reason: _reason, ...mutation }) => mutation),
-        }),
-      });
-    } catch {
-      // Offline, timed out, or the server rejected the batch outright —
-      // leave every row "pending" so the next flush (online event, 15s
-      // interval, or manual retry) picks them back up unchanged.
-      return;
-    }
-
-    const byId = new Map<string, SyncMutationResult>(
-      response.results.map((r) => [r.client_mutation_id, r])
-    );
-
-    const tx = db.transaction(MUTATIONS_STORE, "readwrite");
     for (const row of pending) {
-      const result = byId.get(row.client_mutation_id);
-      if (!result) continue; // server didn't report on this one; leave pending
+      const { status: _status, reason: _reason, ...mutation } = row;
+      let result: SyncMutationResult;
+      try {
+        result = await applyMutation(mutation);
+      } catch {
+        // Leave this row "pending" — the next flush (online event, 15s
+        // interval, or manual retry) picks it back up unchanged. Other
+        // rows in this same pass are unaffected (per-row try/catch).
+        continue;
+      }
       if (result.status === "applied" || result.status === "already_applied") {
-        await tx.store.put({ ...row, status: "synced", reason: undefined });
+        await db.put(MUTATIONS_STORE, { ...row, status: "synced", reason: undefined });
       } else {
-        await tx.store.put({ ...row, status: "failed", reason: result.reason });
+        await db.put(MUTATIONS_STORE, { ...row, status: "failed", reason: result.reason });
       }
     }
-    await tx.done;
   } finally {
     setSyncing(false);
     void refreshPendingCount();

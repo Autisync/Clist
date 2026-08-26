@@ -6,18 +6,18 @@
  * each one tappable to mark complete, then "Fazer as medições" through to
  * /tests. CLAUDE.md: "treat its interaction design as settled."
  *
- * Real data: GET /api/jobs/:id for job.execution_snapshot (resolved once at
- * job-creation time — architecture §5's "resolved once, never re-read"
- * rule — shape {steps:[{order,label}]}, see 05-phase2-job-loop.md §7 /
- * apps/api/test/phase2-proof.mjs's execution_steps template body). There is
- * no GET endpoint anywhere for job_execution_step_completion rows
- * (confirmed against apps/api/src/routes/jobs.ts and domain/execution-steps.ts
- * — only the POST /jobs/:id/execution-steps/:step/complete write path
- * exists), so which steps are already done isn't knowable from the server
- * on page load; completion is tracked as client-side state for this
+ * Technician-auth migration (08-supabase-native-migration.md §2): reads a
+ * direct `.from("job").select("execution_snapshot")` instead of GET
+ * /api/jobs/:id — same frozen-at-creation-time snapshot (architecture §5's
+ * "resolved once, never re-read" rule), shape {steps:[{order,label}]}. No
+ * table/RLS-scoped read exists for job_execution_step_completion rows
+ * either (rpc_execution_step_complete only writes; nothing reads them
+ * back), so which steps are already done still isn't knowable from the
+ * server on page load — completion stays client-side state for this
  * session, same as /prep's own answers. Each tap still enqueues the real
- * mutation (src/lib/offline-queue.ts) so the office gets it via sync
- * regardless of whether this tab is later closed.
+ * mutation (src/lib/offline-queue.ts, now dispatching to
+ * rpc_execution_step_complete directly) so the office gets it regardless
+ * of whether this tab is later closed.
  *
  * The prototype's "A contar 2h 14 de Xh previstas" running-timer card is
  * deliberately omitted — there is no server-side timer-start endpoint
@@ -29,7 +29,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { CheckCircle2 } from "lucide-react";
-import { apiFetch, ApiError } from "@/lib/api";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { enqueueMutation } from "@/lib/offline-queue";
 import { BigButton } from "@/components/field/BigButton";
 import { PhoneScreen } from "@/components/field/PhoneScreen";
@@ -55,17 +55,20 @@ export default function SitePage() {
 
     async function load() {
       try {
-        const job = await apiFetch<Job>(`/jobs/${jobId}`);
+        const supabase = createSupabaseBrowserClient();
+        const { data: job, error } = await supabase
+          .from("job")
+          .select("id, execution_snapshot")
+          .eq("id", jobId)
+          .maybeSingle<Job>();
         if (cancelled) return;
+        if (error) throw error;
+        if (!job) throw new Error("job_not_found");
 
         const steps = job.execution_snapshot?.steps ?? [];
         setState({ kind: "ready", steps: [...steps].sort((a, b) => a.order - b.order) });
-      } catch (err) {
+      } catch {
         if (cancelled) return;
-        if (err instanceof ApiError && err.status === 401) {
-          router.push("/field/login");
-          return;
-        }
         setState({ kind: "error", message: "Não foi possível carregar os passos do trabalho." });
       }
     }

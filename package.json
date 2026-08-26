@@ -17,6 +17,7 @@
     "proof:phase4": "npm run proof:phase4 --workspace=apps/api",
     "proof:bridge-auth": "npm run proof:bridge-auth --workspace=apps/api",
     "proof:tech-pairing": "npm run proof:tech-pairing --workspace=apps/api",
+    "proof:field-flow": "npm run proof:field-flow --workspace=apps/api",
     "smoke:web": "node --env-file=apps/api/.env apps/web/test/smoke.mjs",
     "verify:schema": "node verify-schema.mjs 03-schema.sql",
     "verify:seed": "node verify-seed.mjs 03-schema.sql seed.sql",

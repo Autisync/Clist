@@ -7,13 +7,17 @@
  * "Próxima tomada"/"Terminar medições" through to /voice. CLAUDE.md: "treat
  * its interaction design as settled."
  *
- * Real data: GET /api/jobs/:id for job.test_protocol_snapshot — the frozen
- * TestProtocolBody (architecture §5's "resolved once" rule: this never
- * re-reads the template, only the snapshot already on the job row). If a
- * job has no snapshot at all (no test_protocol resolved at creation time),
- * this stage's own instruction is to show a plain "Sem protocolo
+ * Technician-auth migration (08-supabase-native-migration.md §2): reads a
+ * direct `.from("job").select("test_protocol_snapshot")` instead of GET
+ * /api/jobs/:id — same frozen-at-creation-time snapshot (architecture §5's
+ * "resolved once" rule). If a job has no snapshot at all (no test_protocol
+ * resolved at creation time), still shows a plain "Sem protocolo
  * aplicável" state with a way to skip straight to /voice, not to fabricate
- * a protocol.
+ * a protocol. Photo capture (uploadPhoto, @/lib/api) and test-result
+ * mutations (enqueueMutation, @/lib/offline-queue) needed no change here —
+ * both already carry a real Supabase bearer token / dispatch to
+ * rpc_test_result_record from the fixes those two files' own comments
+ * document.
  *
  * OUTLETS is a small fixed set (Sala / Quarto 1 / Quarto 2), matching the
  * prototype's own OUTLETS constant (fieldready-prototype.jsx:1329) — real
@@ -47,7 +51,8 @@ import { useParams, useRouter } from "next/navigation";
 import { CheckCircle2, XCircle, Camera, Loader2 } from "lucide-react";
 import type { TestProtocolBody } from "@fieldready/core";
 import { evalTest } from "@fieldready/core";
-import { apiFetch, ApiError, uploadPhoto } from "@/lib/api";
+import { uploadPhoto } from "@/lib/api";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { enqueueMutation } from "@/lib/offline-queue";
 import { BigButton } from "@/components/field/BigButton";
 import { PhoneScreen } from "@/components/field/PhoneScreen";
@@ -87,20 +92,23 @@ export default function TestsPage() {
 
     async function load() {
       try {
-        const job = await apiFetch<Job>(`/jobs/${jobId}`);
+        const supabase = createSupabaseBrowserClient();
+        const { data: job, error } = await supabase
+          .from("job")
+          .select("id, test_protocol_snapshot")
+          .eq("id", jobId)
+          .maybeSingle<Job>();
         if (cancelled) return;
+        if (error) throw error;
+        if (!job) throw new Error("job_not_found");
 
         if (!job.test_protocol_snapshot) {
           setState({ kind: "no-protocol" });
           return;
         }
         setState({ kind: "ready", protocol: job.test_protocol_snapshot });
-      } catch (err) {
+      } catch {
         if (cancelled) return;
-        if (err instanceof ApiError && err.status === 401) {
-          router.push("/field/login");
-          return;
-        }
         setState({ kind: "error", message: "Não foi possível carregar o protocolo de testes." });
       }
     }

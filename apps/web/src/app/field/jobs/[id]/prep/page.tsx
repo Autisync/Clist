@@ -6,13 +6,13 @@
  * font-mono quantity, two BigBtn tap targets ("Tenho" / "Não tenho").
  * CLAUDE.md: "treat its interaction design as settled."
  *
- * Real data: GET /api/jobs/:id/readiness, filtered to scope === "job" —
- * per this stage's task, that's the technician's own list (the prototype's
- * "keep it 4-6 items" list), not bootstrap's checklist_items (which only
- * carry {id, status}, no cat/label/qty/scope/mandatory — see
- * apps/api/src/routes/sync.ts). Units for material items come from a
- * second GET /api/catalog-items lookup (item_id -> unit); items with no
- * item_id (doc rows) show "documento", matching the prototype's
+ * Technician-auth migration (08-supabase-native-migration.md §2): reads
+ * are now a direct `.from("job_checklist_item")` query (scope="job"
+ * filtered server-side) instead of GET /api/jobs/:id/readiness, mirroring
+ * the exact column set office/jobs/[id]/page.tsx's own already-proven
+ * query already selects. Units for material items come from a second
+ * `.from("catalog_item")` lookup (item_id -> unit); items with no item_id
+ * (doc rows) show "documento", matching the prototype's
  * `c.itemId ? itemById(c.itemId).unit : "documento"` fallback.
  *
  * Cycling stays client-side state (a single index over one fetched list),
@@ -33,7 +33,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ChevronLeft, CheckCircle2, XCircle, Package, Wrench, FileText } from "lucide-react";
-import { apiFetch, ApiError } from "@/lib/api";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { enqueueMutation } from "@/lib/offline-queue";
 import { BigButton } from "@/components/field/BigButton";
 import { prepStorageKey, type Cat, type ReadinessItem, type PrepAnswerItem } from "../_lib/prep";
@@ -69,23 +69,28 @@ export default function PrepPage() {
 
     async function load() {
       try {
-        const [readiness, catalog] = await Promise.all([
-          apiFetch<{ items: ReadinessItem[] }>(`/jobs/${jobId}/readiness`),
-          apiFetch<{ catalog_items: { id: string; unit: string }[] }>("/catalog-items"),
-        ]);
+        const supabase = createSupabaseBrowserClient();
+        const [{ data: items, error: itemsError }, { data: catalogItems, error: catalogError }] =
+          await Promise.all([
+            supabase
+              .from("job_checklist_item")
+              .select("id, cat, label, qty, item_id, scope, mandatory, status")
+              .eq("job_id", jobId)
+              .eq("scope", "job")
+              .order("cat")
+              .order("label"),
+            supabase.from("catalog_item").select("id, unit"),
+          ]);
         if (cancelled) return;
+        if (itemsError) throw itemsError;
+        if (catalogError) throw catalogError;
 
-        const units = new Map(catalog.catalog_items.map((c) => [c.id, c.unit]));
-        const list = readiness.items.filter((c) => c.scope === "job");
-        setState({ kind: "ready", list, units });
+        const units = new Map((catalogItems ?? []).map((c) => [c.id, c.unit]));
+        setState({ kind: "ready", list: (items ?? []) as ReadinessItem[], units });
         setIdx(0);
         setAnswers({});
-      } catch (err) {
+      } catch {
         if (cancelled) return;
-        if (err instanceof ApiError && err.status === 401) {
-          router.push("/field/login");
-          return;
-        }
         setState({ kind: "error", message: "Não foi possível carregar a lista de verificação." });
       }
     }

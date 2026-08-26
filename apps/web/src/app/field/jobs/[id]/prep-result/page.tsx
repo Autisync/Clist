@@ -27,7 +27,6 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { CheckCircle2, AlertTriangle, XCircle, Navigation, MapPin } from "lucide-react";
 import { BigButton } from "@/components/field/BigButton";
-import { apiFetch } from "@/lib/api";
 import { prepStorageKey, type PrepAnswerItem } from "../_lib/prep";
 
 type PickupPlanEntry = {
@@ -82,24 +81,28 @@ export default function PrepResultPage() {
     }
   }, [state.kind, jobId, router]);
 
-  // Fetch the supplier pickup plan once there's something missing —
-  // GET /jobs/:id/pickup-plan (07-phase4-cost-intelligence.md §4) reads the
-  // job's own missing mandatory checklist items server-side, so this call
-  // needs no payload beyond the job id.
+  // Supplier pickup plan — NOT ported in the technician-auth migration.
+  // GET /jobs/:id/pickup-plan (07-phase4-cost-intelligence.md §4) is the
+  // classic Fastify system's own route, reading `jobId` against the
+  // CLASSIC schema's own job table — a completely different id space from
+  // the Supabase-native `public.job` id this page now has (technician-auth
+  // migration, 08-supabase-native-migration.md §2), so it would 404 for
+  // every real call from here, always. Porting the full multi-supplier
+  // coverage/open-now/price ranking algorithm (domain/sourcing.ts's
+  // pickupPlan(), a real algorithm, not a simple filter) to a Supabase RPC
+  // is real, separate follow-up work, deliberately out of scope for
+  // getting the core technician loop (login/checklist/execution/tests/
+  // closeout) working end to end — apps/web/src/lib/dashboard.ts's
+  // sourcingOptionsFor() ported the simpler per-item case for the office
+  // dashboard; the multi-item pickup-plan optimization itself is still
+  // only proven against the classic system's own test fixtures
+  // (apps/api/test/phase4-proof.mjs). Left disabled rather than calling a
+  // route guaranteed to fail — pickupPlan starts and stays [], which the
+  // render below already treats as "no suggestions" (a real, pre-existing
+  // state, not a new failure mode this introduces).
   useEffect(() => {
-    if (state.kind !== "ready" || state.missing.length === 0) return;
-    let cancelled = false;
-    apiFetch<{ plan: PickupPlanEntry[] }>(`/jobs/${jobId}/pickup-plan`)
-      .then((res) => {
-        if (!cancelled) setPickupPlan(res.plan);
-      })
-      .catch(() => {
-        if (!cancelled) setPickupPlan([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [state, jobId]);
+    setPickupPlan([]);
+  }, [state]);
 
   if (state.kind === "loading" || state.kind === "missing-data") {
     return <div className="h-full bg-white" />;

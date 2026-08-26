@@ -25,10 +25,47 @@ import { createServerClient } from "@supabase/ssr";
  * boundary — RLS enforces access on every Supabase-backed request
  * regardless of what this middleware decides.
  *
- * /field/* is unchanged — still the original fr_session cookie check.
- * Technician/device auth migrates in its own later slice (§2 of the design
- * doc: "deliberately second, not parallel").
+ * /field/*: technician-auth migration (08-supabase-native-migration.md §2)
+ * — device pairing/login now issue a real Supabase session (routes/
+ * technicians.ts, field/login/page.tsx), not fr_session at all, so this
+ * branch needs the exact same either/or acceptance the /office/* branch
+ * above already learned the hard way (same comment's own history: an
+ * earlier version of THIS file required Supabase exclusively for /office/*
+ * and broke every still-fr_session-only page). Any device paired before
+ * this migration still signs in via the classic route and still gets
+ * fr_session — checked first, unchanged, zero regression for it.
  */
+async function hasRealSupabaseSession(request: NextRequest): Promise<{ ok: boolean; response: NextResponse }> {
+  let response = NextResponse.next({ request });
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          for (const { name, value } of cookiesToSet) {
+            request.cookies.set(name, value);
+          }
+          response = NextResponse.next({ request });
+          for (const { name, value, options } of cookiesToSet) {
+            response.cookies.set(name, value, options);
+          }
+        },
+      },
+    }
+  );
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  return { ok: user != null, response };
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -37,49 +74,27 @@ export async function middleware(request: NextRequest) {
       return NextResponse.next();
     }
 
-    let response = NextResponse.next({ request });
-
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll() {
-            return request.cookies.getAll();
-          },
-          setAll(cookiesToSet) {
-            for (const { name, value } of cookiesToSet) {
-              request.cookies.set(name, value);
-            }
-            response = NextResponse.next({ request });
-            for (const { name, value, options } of cookiesToSet) {
-              response.cookies.set(name, value, options);
-            }
-          },
-        },
-      }
-    );
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
+    const { ok, response } = await hasRealSupabaseSession(request);
+    if (!ok) {
       const loginUrl = new URL("/login", request.url);
       loginUrl.searchParams.set("next", pathname);
       return NextResponse.redirect(loginUrl);
     }
-
     return response;
   }
 
   if (pathname.startsWith("/field") && pathname !== "/field/login") {
-    const hasSession = request.cookies.has("fr_session");
-    if (!hasSession) {
+    if (request.cookies.has("fr_session")) {
+      return NextResponse.next();
+    }
+
+    const { ok, response } = await hasRealSupabaseSession(request);
+    if (!ok) {
       const loginUrl = new URL("/field/login", request.url);
       loginUrl.searchParams.set("next", pathname);
       return NextResponse.redirect(loginUrl);
     }
+    return response;
   }
 
   return NextResponse.next();

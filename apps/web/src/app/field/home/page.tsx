@@ -6,38 +6,34 @@
  * levar" / "Abrir mapa" buttons) — CLAUDE.md: "treat its interaction
  * design as settled."
  *
- * Real data instead of the prototype's hardcoded JOB-2041:
- *   - GET /api/sync/bootstrap returns the technician's own assigned
- *     dispatched/in_progress/testing jobs (already scoped server-side to
- *     the session's user_id) — take the first one, per this stage's task.
- *   - Bootstrap's job rows only carry id + snapshots + checklist item
- *     id/status (apps/api/src/routes/sync.ts), not title/address/
- *     scheduled_at/client_id, so a follow-up GET /api/jobs/:id fills those
- *     in — same "no single route has everything" situation the office
- *     job-detail page already documents and solves the same way.
- *   - There's no GET /clients/:id (only the tenant-scoped list, checked
- *     apps/api/src/routes/clients.ts) — same pattern as the office pages:
- *     fetch GET /api/clients and find by id client-side.
+ * Technician-auth migration (08-supabase-native-migration.md §2): reads now
+ * go straight to Supabase instead of GET /api/sync/bootstrap + GET
+ * /api/jobs/:id + GET /api/clients (the classic system's own three-call
+ * shape this page used to need, per its own now-superseded comment) —
+ * `job` scoped by `assigned_to = <own app_user id> and status in
+ * (dispatched, in_progress, testing)`, same filter and ordering
+ * apps/api/src/routes/sync.ts's bootstrap handler used, ordered by
+ * created_at desc, taking the first result. fn_current_app_user_id() is
+ * directly callable as its own RPC (confirmed this session — no explicit
+ * grant/revoke on it in schema.sql, so Postgres's default PUBLIC execute
+ * grant on a new function already exposes it) — this is how a technician
+ * session resolves "which app_user am I" without a dedicated whoami route,
+ * closing the gap the classic system's own /office/technicians comment
+ * used to name.
  *
- * No GET /auth/whoami exists (see office/technicians/page.tsx's own note
- * on this gap), so there's no source for the technician's first name the
- * prototype's "Bom dia, Rui" hardcoded — greeting drops the name rather
- * than fake one. Documented as a deviation.
+ * Still no source for the technician's first name (fn_current_app_user_id
+ * gives an id, not a name, and reading it back would be a second round
+ * trip for cosmetic value only) — greeting drops the name rather than fake
+ * one, same deviation the classic version already documented.
  *
- * Zero jobs -> plain "Sem trabalhos atribuídos hoje" empty state, not a
- * broken card (this stage's explicit instruction).
+ * Zero jobs -> plain "Sem trabalhos atribuídos hoje" empty state, unchanged.
  */
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Package, Navigation, Radio } from "lucide-react";
-import { apiFetch, ApiError } from "@/lib/api";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { BigButton } from "@/components/field/BigButton";
-
-type BootstrapJob = {
-  id: string;
-  checklist_items: { id: string; status: string }[];
-};
 
 type Job = {
   id: string;
@@ -48,7 +44,7 @@ type Job = {
   scheduled_at: string | null;
 };
 
-type Client = { id: string; name: string; address: string | null };
+type Client = { id: string; name: string };
 
 type LoadState =
   | { kind: "loading" }
@@ -79,29 +75,54 @@ export default function FieldHomePage() {
 
     async function load() {
       try {
-        const bootstrap = await apiFetch<{ jobs: BootstrapJob[] }>("/sync/bootstrap");
-        if (cancelled) return;
+        const supabase = createSupabaseBrowserClient();
 
-        const first = bootstrap.jobs[0];
-        if (!first) {
+        // Own app_user id, resolved server-side through technician_device
+        // (fn_current_app_user_id(), schema.sql) — null here means either
+        // no session at all, or a REVOKED device with a still-technically-
+        // valid Supabase access token (routes/technicians.ts's revoke
+        // handler; the bridge-auth-proof.mjs/technician-pairing-proof.mjs
+        // scenario, now reachable from the phone UI too). Either way, the
+        // correct move is the same: this device is not usable, sign out
+        // whatever session it thinks it has and send it back to the PIN
+        // screen — middleware.ts's own getUser() check alone would NOT
+        // catch the revoked-device case (Supabase itself has no idea this
+        // app revoked it), so this is the one place that has to.
+        const { data: myUserId, error: whoamiError } = await supabase.rpc("fn_current_app_user_id");
+        if (cancelled) return;
+        if (whoamiError || !myUserId) {
+          await supabase.auth.signOut();
+          router.push("/field/login");
+          return;
+        }
+
+        const { data: jobs, error: jobError } = await supabase
+          .from("job")
+          .select("id, code, title, address, client_id, scheduled_at")
+          .eq("assigned_to", myUserId)
+          .in("status", ["dispatched", "in_progress", "testing"])
+          .order("created_at", { ascending: false })
+          .limit(1);
+        if (cancelled) return;
+        if (jobError) throw jobError;
+
+        const job = jobs?.[0] as Job | undefined;
+        if (!job) {
           setState({ kind: "empty" });
           return;
         }
 
-        const [job, { clients }] = await Promise.all([
-          apiFetch<Job>(`/jobs/${first.id}`),
-          apiFetch<{ clients: Client[] }>("/clients"),
-        ]);
+        const { data: client, error: clientError } = await supabase
+          .from("client")
+          .select("id, name")
+          .eq("id", job.client_id)
+          .maybeSingle<Client>();
         if (cancelled) return;
+        if (clientError) throw clientError;
 
-        const client = clients.find((c) => c.id === job.client_id) ?? null;
         setState({ kind: "ready", job, clientName: client?.name ?? null });
-      } catch (err) {
+      } catch {
         if (cancelled) return;
-        if (err instanceof ApiError && err.status === 401) {
-          router.push("/field/login");
-          return;
-        }
         setState({ kind: "error", message: "Não foi possível carregar o trabalho de hoje." });
       }
     }
