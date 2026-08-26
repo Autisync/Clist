@@ -26,6 +26,7 @@
     "verify:create-job-supabase": "node --env-file=apps/api/.env apps/api/supabase/verify-create-job.mjs",
     "verify:job-complete-supabase": "node --env-file=apps/api/.env apps/api/supabase/verify-job-complete.mjs",
     "verify:sqt-supabase": "node --env-file=apps/api/.env apps/api/supabase/verify-suppliers-quotes-technicians.mjs",
+    "verify:ited-classification-supabase": "node --env-file=apps/api/.env apps/api/supabase/verify-ited-classification.mjs",
     "apply:rpc-supabase": "node --env-file=apps/api/.env apps/api/supabase/apply-rpc.mjs",
     "seed:supabase": "node --env-file=apps/api/.env apps/api/supabase/apply-seed.mjs",
     "provision:tenant-supabase": "node --env-file=apps/api/.env apps/api/supabase/provision-tenant.mjs",

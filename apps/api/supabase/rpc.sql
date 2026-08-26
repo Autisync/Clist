@@ -1362,6 +1362,111 @@ comment on function rpc_quote_accept(uuid) is
 revoke execute on function rpc_quote_accept(uuid) from public;
 grant execute on function rpc_quote_accept(uuid) to authenticated;
 
+-- ============================================================================
+-- Later addition, beyond §6 Step 5's original scope: office review of
+-- job.ited_classification. Closes a real gap schema.sql's own comment on
+-- the job table flags directly ("Role-differentiated policies ... are not
+-- yet split out; CLAUDE.md's 'technician never classifies' rule is enforced
+-- by pending RPC-function design ... not by these table-level grants") --
+-- until this function existed, RLS alone permitted ANY tenant member,
+-- office or technician, to write job.ited_classification via a plain
+-- `.from('job').update(...)`, and every verify-*.mjs script that needed a
+-- job "reviewed" wrote straight to the database with the service-role
+-- connection rather than exercising a real caller path, because there
+-- wasn't one yet.
+--
+-- Ports apps/api/src/routes/jobs.ts's PATCH /jobs/:id ited_classification
+-- branch (role check: technician gets 403; office/owner proceeds) plus
+-- packages/core/src/job.ts's JobPatchRequest.refine (ited_classification_note
+-- required when ited_classification is out_of_scope/exempt — mirrors
+-- schema.sql's own job CHECK constraint verbatim, same "reject before SQL
+-- sees it" reasoning that comment gives, not a substitute for the CHECK,
+-- which still runs regardless). SECURITY INVOKER, not DEFINER, same as
+-- every other function in this file — RLS on `job` is what actually scopes
+-- this to the caller's own tenant; the explicit `and tenant_id =
+-- fn_current_tenant_id()` below is the same defense-in-depth belt-and-
+-- suspenders rpc_closeout_set_rework_cause already added for job_closeout,
+-- not something RLS needs backing up here either.
+--
+-- The role check mirrors rpc_closeout_set_rework_cause's own reasoning for
+-- checking role explicitly rather than relying on "technician auth isn't
+-- Supabase-native yet": true today, not something this function should
+-- assume stays true.
+create or replace function rpc_job_ited_classification_review(
+  p_job_id uuid,
+  p_ited_classification text,
+  p_ited_classification_note text default null
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_tenant_id uuid;
+  v_app_user_id uuid;
+  v_role text;
+  v_row record;
+begin
+  v_tenant_id := fn_current_tenant_id();
+  if v_tenant_id is null then
+    raise exception 'rpc_job_ited_classification_review: no tenant context resolved for this session';
+  end if;
+
+  if p_ited_classification not in ('licensed', 'existing_alteration', 'out_of_scope', 'exempt') then
+    raise exception 'rpc_job_ited_classification_review: invalid ited_classification %', p_ited_classification;
+  end if;
+
+  -- Mirrors schema.sql's job CHECK constraint exactly: note required (and
+  -- non-whitespace, per the same '\S' fix rpc_closeout_set_rework_cause
+  -- already applied to this identical bug shape) only for out_of_scope/exempt.
+  if p_ited_classification in ('out_of_scope', 'exempt')
+     and (p_ited_classification_note is null or p_ited_classification_note !~ '\S') then
+    raise exception 'rpc_job_ited_classification_review: ited_classification_note is required when ited_classification is out_of_scope or exempt';
+  end if;
+
+  v_app_user_id := fn_current_app_user_id();
+
+  select role into v_role from app_user where id = v_app_user_id;
+  if v_role = 'technician' then
+    raise exception 'rpc_job_ited_classification_review: ited_classification is office-review-only (PRD §7) — the technician never classifies anything';
+  end if;
+
+  -- Note: unlike a partial PATCH, this always overwrites
+  -- ited_classification_note to whatever was passed (null if omitted) --
+  -- ports the classic route's own `body.ited_classification_note ?? null`
+  -- behavior exactly (routes/jobs.ts), not a "preserve if omitted" merge.
+  update job
+  set ited_classification = p_ited_classification,
+      ited_classification_note = p_ited_classification_note,
+      ited_classification_by = v_app_user_id
+  where id = p_job_id and tenant_id = v_tenant_id
+  returning id, ited_classification, ited_classification_note, ited_classification_by into v_row;
+
+  if not found then
+    return jsonb_build_object('kind', 'not_found');
+  end if;
+
+  return jsonb_build_object(
+    'kind', 'ok',
+    'id', v_row.id,
+    'ited_classification', v_row.ited_classification,
+    'ited_classification_note', v_row.ited_classification_note,
+    'ited_classification_by', v_row.ited_classification_by
+  );
+end;
+$$;
+
+comment on function rpc_job_ited_classification_review(uuid, text, text) is
+  'Later addition beyond §6 Step 5''s original scope, closing a gap '
+  'schema.sql''s own job-table comment names directly. SECURITY INVOKER -- '
+  'RLS on job is what actually restricts this to the caller''s own tenant; '
+  'the role check is this function''s own belt-and-suspenders enforcement '
+  'of PRD §7''s "technician never classifies anything", the same '
+  'defense-in-depth shape rpc_closeout_set_rework_cause already applies to '
+  'job_closeout.rework_cause.';
+
+revoke execute on function rpc_job_ited_classification_review(uuid, text, text) from public;
+grant execute on function rpc_job_ited_classification_review(uuid, text, text) to authenticated;
+
 -- Deliberately NOT here: technician device pairing (Fastify's POST
 -- /auth/technician/pair). A first attempt at rpc_technician_device_pair()
 -- assumed pairing was a plain "insert a row with a hashed PIN" write, like

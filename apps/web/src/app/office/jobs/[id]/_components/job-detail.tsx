@@ -14,7 +14,13 @@
  * test result -> rpc_test_result_record, complete -> rpc_job_complete,
  * closeout -> rpc_closeout_submit, rework-cause -> rpc_closeout_set_rework_cause
  * — the last two new to this slice, apps/api/supabase/rpc.sql) instead of
- * Fastify's PATCH/POST routes through the /api/* proxy. Each RPC returns a
+ * Fastify's PATCH/POST routes through the /api/* proxy. ITED classification
+ * review -> rpc_job_ited_classification_review is a later addition closing a
+ * real gap: this page used to only *display* ited_classification, with no
+ * control for an office user to actually set it — the office-only role
+ * check that RPC enforces was, until then, only ever exercised by test
+ * fixtures writing straight to the database, never by a real caller. Each
+ * RPC returns a
  * jsonb `{kind: ...}` or `{status: ...}` result on success (even for what
  * used to be a 404/409) rather than throwing — `error` on the returned
  * `{data, error}` pair is reserved for an actual Postgres exception (missing
@@ -65,6 +71,9 @@ type Job = {
   quoted_materials: string;
   assigned_to: string | null;
   status: string;
+  ited_classification: string;
+  ited_classification_note: string | null;
+  ited_classification_by: string | null;
   completed_at: string | null;
   execution_snapshot: ExecutionSnapshot;
   test_protocol_snapshot: TestProtocolSnapshot;
@@ -84,6 +93,19 @@ const CAUSES = [
 ];
 
 const DEFAULT_OUTLETS = ["Sala", "Quarto 1", "Quarto 2"];
+
+// Job classification — PRD §7 / CLAUDE.md's non-negotiable three(+one)-way
+// split, not a boolean. Labels/article citations ported from PRD §7's own
+// wording, not invented — this is a legal classification, not cosmetic
+// copy. "existing_alteration" is the schema default (DL 123/2009's fine
+// schedule makes over-inclusion the safe error), so it's listed first.
+const ITED_CLASSIFICATION_OPTIONS: { value: string; label: string }[] = [
+  { value: "existing_alteration", label: "Alteração de infraestrutura existente (Art. 83.º) — padrão" },
+  { value: "licensed", label: "Licenciado — processo formal (Art. 71.º)" },
+  { value: "out_of_scope", label: "Fora de âmbito — substituição pontual, sem alteração de cablagem" },
+  { value: "exempt", label: "Isento (Art. 60.º) — requer declaração do projetista" },
+];
+const ITED_CLASSIFICATION_NOTE_REQUIRED = new Set(["out_of_scope", "exempt"]);
 
 const PHOTO_PHASES: { id: "before" | "during" | "after"; label: string }[] = [
   { id: "before", label: "Antes" },
@@ -168,6 +190,12 @@ export function JobDetail({
   const [dispatchError, setDispatchError] = useState<string | null>(null);
   const [blocking, setBlocking] = useState<DispatchBlocking[] | null>(null);
   const [dispatchOk, setDispatchOk] = useState(false);
+  const [itedClassification, setItedClassification] = useState(job.ited_classification);
+  const [itedClassificationNote, setItedClassificationNote] = useState(job.ited_classification_note);
+  const [itedClassificationBy, setItedClassificationBy] = useState(job.ited_classification_by);
+  const [classifying, setClassifying] = useState(false);
+  const [classifyError, setClassifyError] = useState<string | null>(null);
+  const [classifyOk, setClassifyOk] = useState(false);
 
   const { label: statusLabel, tone: statusTone } = jobStatusLabel(status);
 
@@ -251,6 +279,55 @@ export function JobDetail({
     }
   }
 
+  // Office-only (PRD §7 / CLAUDE.md's non-negotiable — the technician never
+  // classifies anything). rpc_job_ited_classification_review mirrors the
+  // classic system's PATCH /jobs/:id role check + the job.ted CHECK
+  // constraint's own note-required rule; the note-required validation is
+  // also done here, client-side, before the RPC is even called — same
+  // reasoning packages/core/src/job.ts's own comment gives for validating
+  // before SQL ever sees it ("rejected here ... rather than surfacing as a
+  // raw constraint violation"), not a substitute for the DB-side check,
+  // which still runs regardless.
+  async function reviewClassification(classification: string, note: string) {
+    if (ITED_CLASSIFICATION_NOTE_REQUIRED.has(classification) && !note.trim()) {
+      setClassifyError("É obrigatório indicar uma justificação para esta classificação.");
+      return;
+    }
+    setClassifying(true);
+    setClassifyError(null);
+    setClassifyOk(false);
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc("rpc_job_ited_classification_review", {
+        p_job_id: job.id,
+        p_ited_classification: classification,
+        p_ited_classification_note: note.trim() || null,
+      });
+      if (error) throw error;
+      const result = data as
+        | {
+            kind: "ok";
+            ited_classification: string;
+            ited_classification_note: string | null;
+            ited_classification_by: string;
+          }
+        | { kind: "not_found" };
+      if (result.kind !== "ok") throw new Error(result.kind);
+      setItedClassification(result.ited_classification);
+      setItedClassificationNote(result.ited_classification_note);
+      setItedClassificationBy(result.ited_classification_by);
+      setClassifyOk(true);
+      // Resolve the matching dispatch-blocker locally so the banner doesn't
+      // keep claiming "unreviewed" until the next dispatch attempt re-checks
+      // the server — same pattern toggleItem uses for checklist items.
+      setBlocking((prev) => (prev ? prev.filter((b) => b.kind !== "ited_classification_unreviewed") : prev));
+    } catch {
+      setClassifyError("Não foi possível gravar a classificação. Tente novamente.");
+    } finally {
+      setClassifying(false);
+    }
+  }
+
   return (
     <div className="space-y-5">
       <div className="bg-white rounded border border-zinc-200 p-4">
@@ -318,6 +395,13 @@ export function JobDetail({
           blocking={blocking}
           dispatchOk={dispatchOk}
           onDispatch={dispatch}
+          itedClassification={itedClassification}
+          itedClassificationNote={itedClassificationNote}
+          itedClassificationBy={itedClassificationBy}
+          classifying={classifying}
+          classifyError={classifyError}
+          classifyOk={classifyOk}
+          onReviewClassification={reviewClassification}
         />
       )}
 
@@ -392,6 +476,13 @@ function ReadinessTab({
   blocking,
   dispatchOk,
   onDispatch,
+  itedClassification,
+  itedClassificationNote,
+  itedClassificationBy,
+  classifying,
+  classifyError,
+  classifyOk,
+  onReviewClassification,
 }: {
   jobId: string;
   items: ChecklistItem[];
@@ -406,6 +497,13 @@ function ReadinessTab({
   blocking: DispatchBlocking[] | null;
   dispatchOk: boolean;
   onDispatch: () => void;
+  itedClassification: string;
+  itedClassificationNote: string | null;
+  itedClassificationBy: string | null;
+  classifying: boolean;
+  classifyError: string | null;
+  classifyOk: boolean;
+  onReviewClassification: (classification: string, note: string) => void;
 }) {
   return (
     <>
@@ -487,6 +585,16 @@ function ReadinessTab({
         </div>
       )}
 
+      <ItedClassificationCard
+        classification={itedClassification}
+        note={itedClassificationNote}
+        reviewedBy={itedClassificationBy}
+        submitting={classifying}
+        error={classifyError}
+        saved={classifyOk}
+        onSubmit={onReviewClassification}
+      />
+
       {SCOPE_SECTIONS.map(({ scope, title, desc }) => {
         const rows = items.filter((c) => c.scope === scope);
         if (rows.length === 0) return null;
@@ -563,6 +671,101 @@ function ReadinessTab({
         );
       })}
     </>
+  );
+}
+
+// Office review of job.ited_classification — PRD §7 / CLAUDE.md's
+// non-negotiable: the technician never classifies anything, the default
+// (existing_alteration) is the safe over-inclusive one, and out_of_scope/
+// exempt require a note. Renders regardless of compliance_profile — a
+// basic-profile tenant's dispatch gate never blocks on this (rpc_dispatch_job
+// skips condition (d) entirely for compliance_profile='basic'), but the
+// classification itself is still a real job attribute worth an office
+// record either way, and the RLS/RPC layer doesn't distinguish tenants
+// here — it's a straight office-only check.
+function ItedClassificationCard({
+  classification,
+  note,
+  reviewedBy,
+  submitting,
+  error,
+  saved,
+  onSubmit,
+}: {
+  classification: string;
+  note: string | null;
+  reviewedBy: string | null;
+  submitting: boolean;
+  error: string | null;
+  saved: boolean;
+  onSubmit: (classification: string, note: string) => void;
+}) {
+  const [draftClassification, setDraftClassification] = useState(classification);
+  const [draftNote, setDraftNote] = useState(note ?? "");
+  const noteRequired = ITED_CLASSIFICATION_NOTE_REQUIRED.has(draftClassification);
+  const dirty = draftClassification !== classification || draftNote !== (note ?? "");
+
+  return (
+    <Section
+      title="Classificação ITED"
+      desc="Revisão do escritório — o técnico nunca classifica um trabalho (PRD §7)."
+    >
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Pill tone={reviewedBy ? "green" : "amber"}>
+            {reviewedBy ? "Revisto pelo escritório" : "Por rever"}
+          </Pill>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-zinc-600 mb-1">Classificação</label>
+          <select
+            value={draftClassification}
+            onChange={(e) => setDraftClassification(e.target.value)}
+            disabled={submitting}
+            className="w-full rounded border border-zinc-300 px-3 py-2 text-sm bg-white disabled:bg-zinc-50"
+          >
+            {ITED_CLASSIFICATION_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {noteRequired && (
+          <div>
+            <label className="block text-xs font-medium text-zinc-600 mb-1">
+              Justificação (obrigatória para esta classificação)
+            </label>
+            <textarea
+              value={draftNote}
+              onChange={(e) => setDraftNote(e.target.value)}
+              disabled={submitting}
+              rows={2}
+              className="w-full rounded border border-zinc-300 px-3 py-2 text-sm disabled:bg-zinc-50"
+              placeholder="Motivo da classificação…"
+            />
+          </div>
+        )}
+
+        {error && <ErrorNote text={error} />}
+        {saved && !dirty && <SuccessNote text="Classificação gravada." />}
+
+        <button
+          onClick={() => onSubmit(draftClassification, draftNote)}
+          disabled={submitting || !dirty}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded text-sm font-medium transition-colors ${
+            !submitting && dirty
+              ? "bg-cyan-600 text-white hover:bg-cyan-700"
+              : "bg-zinc-200 text-zinc-400 cursor-not-allowed"
+          }`}
+        >
+          {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+          {submitting ? "A gravar…" : "Gravar classificação"}
+        </button>
+      </div>
+    </Section>
   );
 }
 
