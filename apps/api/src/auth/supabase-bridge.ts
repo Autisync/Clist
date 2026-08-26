@@ -40,7 +40,12 @@
 import type { SessionClaims } from "@fieldready/core";
 import { withMigrator } from "../db.js";
 
-async function verifySupabaseUserId(bearerToken: string): Promise<string | null> {
+// Exported: routes/platform-admin.ts's own auth needs this same real-token
+// verification but resolves identity against platform_admin, not
+// app_user/technician_device — a fundamentally different (cross-tenant,
+// not tenant-scoped) identity model that doesn't fit SessionClaims at all,
+// so it can't reuse resolveSupabaseClaims below, only the token check.
+export async function verifySupabaseUserId(bearerToken: string): Promise<string | null> {
   const projectRef = process.env.SUPABASE_PROJECT_REF;
   const anonKey = process.env.SUPABASE_ANON_KEY;
   if (!projectRef || !anonKey) return null;

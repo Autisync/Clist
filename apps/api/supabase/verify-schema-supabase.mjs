@@ -70,6 +70,36 @@ await db.connect();
 console.log(`Connected to db.${projectRef}.supabase.co as postgres.`);
 
 try {
+  // Real, already-occurred incident, not a hypothetical: this file's own
+  // header comment already said "once a real tenant exists, do not run
+  // this again without confirming with the user first" — and this exact
+  // mistake happened anyway, twice, running this script to apply a schema
+  // change while a real tenant (belonging to a DIFFERENT, concurrent
+  // session sharing this same Supabase project) already existed. A
+  // comment nobody is forced to re-read before running the script was not
+  // enough to prevent it. This check is the actual enforcement: refuses
+  // to run at all once any tenant row exists, full stop, rather than
+  // trusting whoever runs this next to have read and remembered the
+  // warning above. Real, deliberate override for the one legitimate case
+  // (you own every tenant on this project and know exactly what you're
+  // about to destroy) is the env var below — never make this the default
+  // path, never suggest it in a hurry.
+  const tenantCheck = await db.query(`select count(*)::int as n from tenant;`).catch(() => ({ rows: [{ n: 0 }] }));
+  if (tenantCheck.rows[0].n > 0 && !process.env.I_UNDERSTAND_THIS_DESTROYS_REAL_DATA) {
+    console.error(
+      `\nRefusing to run: ${tenantCheck.rows[0].n} tenant row(s) already exist on this project.\n` +
+      'This script drops and recreates every table schema.sql owns, including tenant/job/\n' +
+      'app_user — there is no partial or reversible mode. If you are certain every one of\n' +
+      'those tenants is disposable test data YOU own (not a real customer, not a fixture\n' +
+      'belonging to a different concurrent session on this same project), re-run with\n' +
+      'I_UNDERSTAND_THIS_DESTROYS_REAL_DATA=1 in the environment. Otherwise: apply schema\n' +
+      'changes with a targeted, non-destructive script instead (see apply-rpc.mjs/\n' +
+      'apply-seed.mjs for the pattern this project already uses for exactly this reason).'
+    );
+    await db.end();
+    process.exit(1);
+  }
+
   // Idempotent reset: drop exactly what schema.sql creates, nothing else —
   // never `drop schema public cascade` (would risk Supabase's own objects).
   console.log('Resetting prior run\'s objects (if any) ...');
@@ -81,10 +111,11 @@ try {
       job_closeout, compliance_deadline, termo_responsabilidade, ref_document,
       job_test_result, equipment, van_audit, job_checklist_item, job, quote_line,
       quote, client, receipt_line, receipt, supplier_price, supplier, catalog_item,
-      template_version, template, technician_device, app_user, tenant
+      template_version, template, technician_device, app_user, platform_admin, tenant
       cascade;
     drop function if exists fn_current_tenant_id() cascade;
     drop function if exists fn_current_app_user_id() cascade;
+    drop function if exists fn_is_platform_admin() cascade;
     drop function if exists fn_activate_template_version_guard() cascade;
     drop function if exists fn_ref_termo_reconciliation() cascade;
     drop function if exists fn_termo_ref_reconciliation() cascade;

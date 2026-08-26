@@ -66,6 +66,49 @@ async function hasRealSupabaseSession(request: NextRequest): Promise<{ ok: boole
   return { ok: user != null, response };
 }
 
+/*
+ * /admin/*: the platform-admin onboarding UI, schema.sql §2b. A platform
+ * admin has no tenant_id at all — fn_is_platform_admin() (SECURITY
+ * INVOKER, schema.sql) is the sole sanctioned way to check this, so this
+ * calls it the same way a real page would, through the caller's own
+ * RLS-scoped session, not a separate trusted check. No fr_session
+ * fallback here at all, unlike /office and /field above — there is no
+ * classic-system equivalent of a platform admin to be backward-compatible
+ * with; this surface is Supabase-native from the day it was built.
+ */
+async function isPlatformAdminSession(request: NextRequest): Promise<{ ok: boolean; response: NextResponse }> {
+  let response = NextResponse.next({ request });
+
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          for (const { name, value } of cookiesToSet) {
+            request.cookies.set(name, value);
+          }
+          response = NextResponse.next({ request });
+          for (const { name, value, options } of cookiesToSet) {
+            response.cookies.set(name, value, options);
+          }
+        },
+      },
+    }
+  );
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, response };
+
+  const { data: isAdmin } = await supabase.rpc("fn_is_platform_admin");
+  return { ok: isAdmin === true, response };
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -97,9 +140,25 @@ export async function middleware(request: NextRequest) {
     return response;
   }
 
+  if (pathname.startsWith("/admin")) {
+    // /admin-login lives OUTSIDE this tree entirely (not /admin/login) —
+    // same reason office's own login lives at bare /login, not
+    // /office/login: admin/layout.tsx renders header chrome (a logout
+    // button) that a not-yet-authenticated login page shouldn't inherit.
+    // The matcher below only ever sends genuinely /admin/* paths here, so
+    // there's no exemption to write for /admin-login at all.
+    const { ok, response } = await isPlatformAdminSession(request);
+    if (!ok) {
+      const loginUrl = new URL("/admin-login", request.url);
+      loginUrl.searchParams.set("next", pathname);
+      return NextResponse.redirect(loginUrl);
+    }
+    return response;
+  }
+
   return NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/office/:path*", "/field/:path*"],
+  matcher: ["/office/:path*", "/field/:path*", "/admin/:path*"],
 };

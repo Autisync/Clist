@@ -256,6 +256,79 @@ as $$
 $$;
 
 -- ============================================================================
+-- 2b. Platform admin — the operator identity, deliberately NOT tenant-scoped.
+--
+-- Everything above this point assumes exactly one identity model: a caller
+-- belongs to one tenant (fn_current_tenant_id()) as one app_user. A
+-- platform admin (FieldReady's own operator, not a customer) structurally
+-- can't fit that model — "operates across every tenant" has no tenant_id
+-- to be. A second, independent identity table, not a special app_user row
+-- or a boolean flag on tenant, for the same reason technician identity
+-- got its own table (technician_device) instead of overloading app_user
+-- further: one row, one clear meaning, nothing else has to special-case it.
+-- Defined here, not near §12's RLS policies, because §12's own
+-- platform_admin_read_all_tenants policy (on `tenant`) calls
+-- fn_is_platform_admin() below — same reason fn_current_tenant_id() itself
+-- lives up here, before anything that references it.
+-- ============================================================================
+
+create table platform_admin (
+  id            uuid primary key default gen_random_uuid(),
+  auth_user_id  uuid not null unique references auth.users(id) on delete cascade,
+  full_name     text not null,
+  created_at    timestamptz not null default now()
+);
+
+comment on table platform_admin is
+  'FieldReady''s own operators, not a customer role -- deliberately no '
+  'tenant_id column at all (unlike app_user, which always has one). No '
+  'self-service path creates a row here; provision-platform-admin.mjs '
+  '(mirrors provision-tenant.mjs) is how the first and only rows exist '
+  'today, run by hand against the trusted service-role connection, same '
+  'as tenant onboarding before routes/platform-admin.ts existed.';
+
+alter table platform_admin enable row level security;
+alter table platform_admin force row level security;
+-- Self-read only, on purpose: no row here should be broadly enumerable by
+-- every other platform admin merely by virtue of being authenticated --
+-- least privilege by default. fn_is_platform_admin() below is the
+-- sanctioned way to answer "is the CURRENT caller an admin"; nothing else
+-- should query this table directly for that question. If a real "list all
+-- admins" UI need ever arises, that's a deliberate, separate policy to add
+-- then, not a default to start from.
+create policy platform_admin_self_read on platform_admin
+  for select
+  using (auth_user_id = auth.uid());
+grant select on platform_admin to authenticated;
+
+-- SECURITY INVOKER, not DEFINER — unlike fn_current_tenant_id(), which
+-- needs to bypass app_user's own RLS to break a real bootstrapping
+-- circularity (resolving tenant_id requires reading app_user, which is
+-- itself gated by a policy conditioned on tenant_id). No such circularity
+-- here: this function's own query (`auth_user_id = auth.uid()`) is
+-- IDENTICAL to platform_admin_self_read's own USING clause above, so a
+-- plain invoker call already sees exactly the one row it needs — adding
+-- SECURITY DEFINER here would be exactly the "design smell" §12's own
+-- header comment warns against, not a defensible use of it.
+create or replace function fn_is_platform_admin()
+returns boolean
+language sql
+stable
+as $$
+  select exists(select 1 from platform_admin where auth_user_id = auth.uid());
+$$;
+
+comment on function fn_is_platform_admin() is
+  'The sole sanctioned way to check "is the current caller a platform '
+  'admin" — used by cross-tenant RLS policies (e.g. tenant''s own '
+  'platform_admin_read_all_tenants) and by apps/web''s /admin/* middleware '
+  'gate. SECURITY INVOKER is correct here, not a placeholder — see the '
+  'comment directly above this function for why.';
+
+revoke execute on function fn_is_platform_admin() from public;
+grant execute on function fn_is_platform_admin() to authenticated;
+
+-- ============================================================================
 -- 3. Template engine — unchanged from 03-schema.sql §4/§4a except RLS (§6 below)
 -- ============================================================================
 
@@ -857,6 +930,19 @@ alter table tenant enable row level security;
 alter table tenant force row level security;
 create policy tenant_isolation on tenant
   using (id = fn_current_tenant_id());
+-- Additive, not a replacement: Postgres OR's multiple permissive policies
+-- for the same command together, so this only ever ADDS visibility for a
+-- real platform admin (fn_current_tenant_id() returns null for one, since
+-- they have no app_user/technician_device row at all -- the policy above
+-- already denies them on its own) -- never narrows what a regular tenant
+-- session already sees. `for select` only, deliberately: a platform admin
+-- can list every tenant this way, but still can't INSERT/UPDATE/DELETE one
+-- through RLS -- onboarding a real tenant needs the service_role Admin API
+-- anyway (creating the first office user's auth.users row), so that stays
+-- a Fastify route (routes/platform-admin.ts), never a plain client write.
+create policy platform_admin_read_all_tenants on tenant
+  for select
+  using (fn_is_platform_admin());
 grant select on tenant to authenticated;
 
 grant usage on schema public to authenticated;
