@@ -34,6 +34,12 @@ function serviceRoleKey(): string {
   return key;
 }
 
+// Same "requirePlatformAdmin-gated but still hits the real Supabase Admin
+// API" reasoning as routes/technicians.ts's ADMIN_API_RATE_LIMIT — bounds
+// a compromised admin session or a runaway client from mass-provisioning
+// tenants, without meaningfully limiting real onboarding pace.
+const ADMIN_API_RATE_LIMIT = { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } };
+
 export async function platformAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook("preHandler", requirePlatformAdmin);
 
@@ -46,7 +52,7 @@ export async function platformAdminRoutes(app: FastifyInstance): Promise<void> {
       office_email?: string;
       office_password?: string;
     };
-  }>("/platform-admin/tenants", async (req, reply) => {
+  }>("/platform-admin/tenants", ADMIN_API_RATE_LIMIT, async (req, reply) => {
     const body = req.body ?? {};
     const tenantName = body.tenant_name?.trim();
     const tenantSlug = body.tenant_slug?.trim();

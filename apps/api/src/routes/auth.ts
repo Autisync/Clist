@@ -23,8 +23,18 @@ const COOKIE_OPTS = {
   // HTTP against localhost.
 };
 
+// Tighter than server.ts's global default (300/min) — these three are the
+// only unauthenticated, credential-guessing-prone endpoints this whole API
+// has: a password (office), a PIN (technician), and an invite-token-as-
+// bearer (pairing). 10/minute per IP is generous for a real typo/retry,
+// tight enough to make brute-forcing a password or a 4-digit PIN
+// impractical. Inherits server.ts's loopback allowList (no allowList set
+// here), so the existing proof suite's own repeated office-login/pairing
+// calls from 127.0.0.1 stay unaffected.
+const LOGIN_RATE_LIMIT = { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } };
+
 export async function authRoutes(app: FastifyInstance): Promise<void> {
-  app.post("/auth/office/login", async (req, reply) => {
+  app.post("/auth/office/login", LOGIN_RATE_LIMIT, async (req, reply) => {
     const body = OfficeLoginRequest.parse(req.body);
 
     const user = await withMigrator(async (db) => {
@@ -64,7 +74,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({ ok: true });
   });
 
-  app.post("/auth/technician/pair", async (req, reply) => {
+  app.post("/auth/technician/pair", LOGIN_RATE_LIMIT, async (req, reply) => {
     // Office-issued invite, not self-registration (architecture §7). Phase 1
     // simplification: the "invite token" is the inviting office user's id —
     // enough to prove device pairing is office-gated without building a
@@ -105,7 +115,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send({ device_id: result.deviceId });
   });
 
-  app.post("/auth/technician/login", async (req, reply) => {
+  app.post("/auth/technician/login", LOGIN_RATE_LIMIT, async (req, reply) => {
     const body = TechnicianLoginRequest.parse(req.body);
 
     const device = await withMigrator(async (db) => {

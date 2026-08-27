@@ -106,11 +106,20 @@ async function banDeviceAuthUser(authUserId: string): Promise<void> {
   });
 }
 
+// Moderate, not strict — these two routes are already requireAuth-gated
+// (not anonymous-brute-forceable the way routes/auth.ts's login endpoints
+// are), but each call hits the real Supabase Admin API to create or ban a
+// real Auth user, so it's still worth bounding a compromised/leaked
+// session or a runaway client bug from mass-provisioning or mass-banning
+// devices. A real office pairs at most a handful of devices per minute.
+const ADMIN_API_RATE_LIMIT = { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } };
+
 export async function technicianRoutes(app: FastifyInstance): Promise<void> {
   app.addHook("preHandler", requireAuth);
 
   app.post<{ Params: { technician_app_user_id: string }; Body: { device_label?: string; pin?: string } }>(
     "/technicians/:technician_app_user_id/pair",
+    ADMIN_API_RATE_LIMIT,
     async (req, reply) => {
       if (req.auth!.role === "technician") {
         return reply.code(403).send({ error: "office_only", message: "Pairing a device is office-only." });
@@ -168,28 +177,32 @@ export async function technicianRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  app.post<{ Params: { device_id: string } }>("/technicians/devices/:device_id/revoke", async (req, reply) => {
-    if (req.auth!.role === "technician") {
-      return reply.code(403).send({ error: "office_only", message: "Revoking a device is office-only." });
-    }
+  app.post<{ Params: { device_id: string } }>(
+    "/technicians/devices/:device_id/revoke",
+    ADMIN_API_RATE_LIMIT,
+    async (req, reply) => {
+      if (req.auth!.role === "technician") {
+        return reply.code(403).send({ error: "office_only", message: "Revoking a device is office-only." });
+      }
 
-    const device = await withPublicSchema((db) =>
-      db.query<{ auth_user_id: string }>(
-        `update public.technician_device
-         set revoked_at = now()
-         where id = $1 and tenant_id = $2 and revoked_at is null
-         returning auth_user_id;`,
-        [req.params.device_id, req.auth!.tenant_id]
-      )
-    );
-    if (device.rows.length === 0) {
-      // Either it doesn't exist, belongs to a different tenant (RLS-shaped
-      // "not found", not a leak, same convention every RPC in this codebase
-      // uses), or was already revoked — idempotent either way, not an error.
-      return reply.send({ ok: true, already_revoked_or_not_found: true });
-    }
+      const device = await withPublicSchema((db) =>
+        db.query<{ auth_user_id: string }>(
+          `update public.technician_device
+           set revoked_at = now()
+           where id = $1 and tenant_id = $2 and revoked_at is null
+           returning auth_user_id;`,
+          [req.params.device_id, req.auth!.tenant_id]
+        )
+      );
+      if (device.rows.length === 0) {
+        // Either it doesn't exist, belongs to a different tenant (RLS-shaped
+        // "not found", not a leak, same convention every RPC in this codebase
+        // uses), or was already revoked — idempotent either way, not an error.
+        return reply.send({ ok: true, already_revoked_or_not_found: true });
+      }
 
-    await banDeviceAuthUser(device.rows[0].auth_user_id);
-    return reply.send({ ok: true });
-  });
+      await banDeviceAuthUser(device.rows[0].auth_user_id);
+      return reply.send({ ok: true });
+    }
+  );
 }

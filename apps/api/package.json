@@ -25,6 +25,7 @@
     "@electric-sql/pglite": "^0.5.5",
     "@fastify/cookie": "^11.1.2",
     "@fastify/multipart": "^9.4.0",
+    "@fastify/rate-limit": "^11.2.0",
     "@fieldready/core": "0.1.0",
     "@supabase/supabase-js": "^2.112.3",
     "@types/pg": "^8.23.1",
