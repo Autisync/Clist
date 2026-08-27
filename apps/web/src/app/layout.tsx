@@ -1,6 +1,21 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { Analytics } from "@vercel/analytics/next";
+import { GoogleAnalytics } from "@next/third-parties/google";
 import { RegisterServiceWorker } from "@/components/RegisterServiceWorker";
+
+// Vercel Analytics needs no credential — it's a no-op everywhere except a
+// real Vercel deployment, where the platform wires it up automatically, so
+// <Analytics /> is unconditional. Google Analytics DOES need a real
+// property id, which doesn't exist in this codebase — gated on
+// NEXT_PUBLIC_GA_MEASUREMENT_ID (unset locally and in any environment that
+// hasn't configured one yet) so it silently does nothing rather than
+// shipping a broken gtag call, same "swap in when a real credential shows
+// up" pattern this project already uses for GOOGLE_PLACES_API_KEY/VERYFI_*
+// on the apps/api side. Set the var in Vercel's dashboard (Project
+// Settings -> Environment Variables) with a real G-XXXXXXXXXX id to
+// activate it — no code change needed after that.
+const gaId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID;
 
 export const metadata: Metadata = {
   title: "FieldReady",
@@ -29,6 +44,8 @@ export default function RootLayout({
       <body className="bg-zinc-50 text-zinc-900 antialiased">
         <RegisterServiceWorker />
         {children}
+        <Analytics />
+        {gaId && <GoogleAnalytics gaId={gaId} />}
       </body>
     </html>
   );

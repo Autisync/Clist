@@ -11,8 +11,10 @@
   },
   "dependencies": {
     "@fieldready/core": "0.1.0",
+    "@next/third-parties": "^16.3.3",
     "@supabase/ssr": "^0.12.4",
     "@supabase/supabase-js": "^2.112.3",
+    "@vercel/analytics": "^2.0.1",
     "idb": "^8.0.0",
     "lucide-react": "^0.475.0",
     "next": "^15.1.0",
