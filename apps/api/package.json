@@ -20,7 +20,8 @@
     "proof:support-tickets": "node --env-file=.env test/support-tickets-proof.mjs",
     "proof:admin-analytics": "node --env-file=.env test/admin-analytics-proof.mjs",
     "proof:places": "node --env-file=.env test/places-provider-proof.mjs",
-    "proof:pickup-plan-real-job": "node --env-file=.env test/pickup-plan-real-job-proof.mjs"
+    "proof:pickup-plan-real-job": "node --env-file=.env test/pickup-plan-real-job-proof.mjs",
+    "proof:technician-analytics": "node --env-file=.env test/technician-analytics-proof.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.5",

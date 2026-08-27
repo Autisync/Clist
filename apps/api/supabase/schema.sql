@@ -1223,8 +1223,55 @@ where jc.closed_at is not null
   and jr.readiness_pct is not null
 group by jr.tenant_id, case when jr.readiness_pct = 100 then 'gated' else 'ungated' end;
 
+-- Per-technician breakdown of the same two metrics v_first_time_fix_rate/
+-- v_hours_variance already compute tenant-wide — a real product
+-- improvement request, not part of the original Phase 4 exit criterion.
+-- security_invoker = true (same as every other view here) means these run
+-- under the CALLER's own RLS on job_closeout/job/app_user, so no separate
+-- grant/policy work is needed beyond the same blanket `grant select ...
+-- to authenticated` every other dashboard view already gets — a caller
+-- who couldn't see a given job_closeout/job/app_user row directly
+-- couldn't see it through this view either.
+--
+-- closed_by (job_closeout), not assigned_to, is who gets first-time-fix
+-- credit — the technician who actually closed the job out, matching
+-- job_closeout's own "technician-facing close-out" semantics
+-- (08-supabase-native-migration.md §2's own comment on that route).
+create view v_first_time_fix_rate_by_technician with (security_invoker = true) as
+select
+  jc.tenant_id,
+  jc.closed_by as technician_id,
+  au.full_name as technician_name,
+  date_trunc('month', jc.closed_at) as month,
+  count(*) as jobs_closed,
+  count(*) filter (where jc.first_time_fix) as first_time_fixes,
+  round(100.0 * count(*) filter (where jc.first_time_fix) / nullif(count(*), 0), 1) as ffr_pct
+from job_closeout jc
+join app_user au on au.id = jc.closed_by
+where jc.closed_at is not null
+group by jc.tenant_id, jc.closed_by, au.full_name, date_trunc('month', jc.closed_at);
+
+-- assigned_to (job), not closed_by — hours variance is about whether the
+-- technician who did the WORK ran over the quoted estimate, which is
+-- assigned_to's own semantics throughout this schema (dispatch-gate.ts,
+-- pickup-plan's own missing-items lookup), not who happened to submit the
+-- close-out form.
+create view v_hours_variance_by_technician with (security_invoker = true) as
+select
+  j.tenant_id,
+  j.assigned_to as technician_id,
+  au.full_name as technician_name,
+  count(*) as n,
+  avg(j.actual_hours - j.quoted_hours) as avg_hours_delta,
+  round(100.0 * avg((j.actual_hours - j.quoted_hours) / nullif(j.quoted_hours, 0)), 1) as avg_pct_variance
+from job j
+join app_user au on au.id = j.assigned_to
+where j.actual_hours is not null and j.assigned_to is not null
+group by j.tenant_id, j.assigned_to, au.full_name;
+
 grant select on v_job_readiness, v_first_time_fix_rate, v_hours_variance,
-  v_price_alerts, v_readiness_correlation to authenticated;
+  v_price_alerts, v_readiness_correlation, v_first_time_fix_rate_by_technician,
+  v_hours_variance_by_technician to authenticated;
 
 -- ============================================================================
 -- 14. Indexes — unchanged from 03-schema.sql §14

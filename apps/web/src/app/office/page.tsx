@@ -78,6 +78,33 @@ type HoursVarianceRow = {
   avg_pct_variance: number | null;
 };
 
+type TechnicianFfrRow = {
+  technician_id: string;
+  technician_name: string;
+  month: string;
+  jobs_closed: number | string | null;
+  first_time_fixes: number | string | null;
+  ffr_pct: number | string | null;
+};
+
+type TechnicianHoursRow = {
+  technician_id: string;
+  technician_name: string;
+  n: number | string | null;
+  avg_hours_delta: number | string | null;
+  avg_pct_variance: number | string | null;
+};
+
+type TechnicianSummary = {
+  technician_id: string;
+  technician_name: string;
+  jobsClosed: number;
+  firstTimeFixes: number;
+  ffrPct: number | null;
+  avgHoursDelta: number | null;
+  avgPctVariance: number | null;
+};
+
 type ReadinessBucket = {
   readiness_bucket: "gated" | "ungated";
   jobs: number | null;
@@ -198,6 +225,8 @@ export default async function DashboardPage() {
     { data: ffrData, error: ffrError },
     { data: hoursData, error: hoursError },
     { data: correlationData, error: correlationError },
+    { data: technicianFfrData, error: technicianFfrError },
+    { data: technicianHoursData, error: technicianHoursError },
   ] = await Promise.all([
     supabase
       .from("job")
@@ -216,12 +245,26 @@ export default async function DashboardPage() {
       .from("v_readiness_correlation")
       .select("readiness_bucket, jobs, rework_jobs, rework_pct")
       .order("readiness_bucket", { ascending: true }),
+    // Per-technician breakdown of the same two metrics above — a real
+    // product improvement, not part of the original Phase 4 exit
+    // criterion. Filtered to the same monthsBoundary window as the
+    // tenant-wide FFR trend, then summed per technician below (sum, not
+    // average-of-averages, same reasoning ffrMonths' own comment gives).
+    supabase
+      .from("v_first_time_fix_rate_by_technician")
+      .select("technician_id, technician_name, month, jobs_closed, first_time_fixes, ffr_pct")
+      .gte("month", monthsBoundary.toISOString()),
+    supabase
+      .from("v_hours_variance_by_technician")
+      .select("technician_id, technician_name, n, avg_hours_delta, avg_pct_variance"),
   ]);
   if (jobsError) throw jobsError;
   if (clientsError) throw clientsError;
   if (ffrError) throw ffrError;
   if (hoursError) throw hoursError;
   if (correlationError) throw correlationError;
+  if (technicianFfrError) throw technicianFfrError;
+  if (technicianHoursError) throw technicianHoursError;
 
   const jobs = (jobsData ?? []) as Job[];
   const clients = clientsData ?? [];
@@ -311,6 +354,43 @@ export default async function DashboardPage() {
       : null;
   const worstType = byType.length > 0 ? byType[0] : null;
   const maxAbsVariance = Math.max(1, ...byType.map((r) => Math.abs(r.avg_pct_variance ?? 0)));
+
+  // Per-technician summary — v_first_time_fix_rate_by_technician arrives
+  // one row per (technician, month) within the window, same shape the
+  // tenant-wide ffrMonths starts from; summed per technician here (sum,
+  // not average-of-averages, same reasoning ffrMonths' own comment gives
+  // a sparse month otherwise gets equal weight to a busy one). Hours
+  // variance has no month dimension in its own view (matching the
+  // tenant-wide v_hours_variance's own by-job_type shape), so those rows
+  // just get merged in directly by technician_id.
+  const technicianTotals = new Map<string, { name: string; jobsClosed: number; firstTimeFixes: number }>();
+  for (const row of (technicianFfrData ?? []) as TechnicianFfrRow[]) {
+    const cur = technicianTotals.get(row.technician_id) ?? { name: row.technician_name, jobsClosed: 0, firstTimeFixes: 0 };
+    cur.jobsClosed += row.jobs_closed === null ? 0 : Number(row.jobs_closed);
+    cur.firstTimeFixes += row.first_time_fixes === null ? 0 : Number(row.first_time_fixes);
+    technicianTotals.set(row.technician_id, cur);
+  }
+  const technicianHoursById = new Map<string, TechnicianHoursRow>(
+    ((technicianHoursData ?? []) as TechnicianHoursRow[]).map((r) => [r.technician_id, r])
+  );
+  const technicianIds = new Set([...technicianTotals.keys(), ...technicianHoursById.keys()]);
+  const technicianSummaries: TechnicianSummary[] = Array.from(technicianIds)
+    .map((id): TechnicianSummary => {
+      const ffr = technicianTotals.get(id);
+      const hours = technicianHoursById.get(id);
+      return {
+        technician_id: id,
+        technician_name: ffr?.name ?? hours?.technician_name ?? "Técnico",
+        jobsClosed: ffr?.jobsClosed ?? 0,
+        firstTimeFixes: ffr?.firstTimeFixes ?? 0,
+        ffrPct: ffr && ffr.jobsClosed > 0 ? (100 * ffr.firstTimeFixes) / ffr.jobsClosed : null,
+        avgHoursDelta: hours?.avg_hours_delta === null || hours?.avg_hours_delta === undefined ? null : Number(hours.avg_hours_delta),
+        avgPctVariance: hours?.avg_pct_variance === null || hours?.avg_pct_variance === undefined ? null : Number(hours.avg_pct_variance),
+      };
+    })
+    // Busiest technician first — the one whose numbers are actually
+    // statistically meaningful belongs at the top, not alphabetical order.
+    .sort((a, b) => b.jobsClosed - a.jobsClosed);
 
   const gated = correlationBuckets.find((b) => b.readiness_bucket === "gated") ?? null;
   const ungated = correlationBuckets.find((b) => b.readiness_bucket === "ungated") ?? null;
@@ -594,13 +674,65 @@ export default async function DashboardPage() {
         )}
       </Section>
 
+      <Section
+        title="Desempenho por técnico"
+        desc="First-time fix e desvio de tempo por técnico, últimos 6 meses"
+      >
+        {technicianSummaries.length === 0 ? (
+          <p className="text-sm text-zinc-500">
+            Sem trabalhos fechados atribuídos a um técnico nos últimos 6 meses.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-zinc-500 border-b border-zinc-200">
+                  <th className="py-1.5 pr-3">Técnico</th>
+                  <th className="pr-3">Trabalhos fechados</th>
+                  <th className="pr-3">First-time fix</th>
+                  <th>Desvio de tempo médio</th>
+                </tr>
+              </thead>
+              <tbody>
+                {technicianSummaries.map((t) => (
+                  <tr key={t.technician_id} className="border-b border-zinc-100">
+                    <td className="py-2 pr-3 font-medium text-zinc-900">{t.technician_name}</td>
+                    <td className="pr-3 font-mono tabular-nums text-zinc-700">{t.jobsClosed || "—"}</td>
+                    <td className="pr-3 font-mono tabular-nums">
+                      {t.ffrPct === null ? (
+                        <span className="text-zinc-400">—</span>
+                      ) : (
+                        <span className={t.ffrPct >= 90 ? "text-green-700" : t.ffrPct >= 75 ? "text-amber-700" : "text-red-700"}>
+                          {pct(t.ffrPct)}
+                        </span>
+                      )}
+                    </td>
+                    <td className="font-mono tabular-nums">
+                      {t.avgPctVariance === null ? (
+                        <span className="text-zinc-400">—</span>
+                      ) : (
+                        <span className={t.avgPctVariance > 0 ? "text-red-600" : "text-green-600"}>
+                          {t.avgPctVariance > 0 ? "+" : ""}
+                          {Math.round(t.avgPctVariance)}%
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
+
       <div className="bg-white rounded border border-dashed border-zinc-300 p-3">
         <div className="flex items-start gap-2">
           <Info className="w-3.5 h-3.5 text-zinc-400 shrink-0 mt-0.5" />
           <p className="text-xs text-zinc-500">
             Os números acima são reais (v_first_time_fix_rate, v_hours_variance,
-            v_readiness_correlation, v_price_alerts) — mas o PRD é explícito: só valem a
-            pena confiar nas conclusões a partir de ~30 trabalhos fechados reais.
+            v_readiness_correlation, v_price_alerts, v_first_time_fix_rate_by_technician,
+            v_hours_variance_by_technician) — mas o PRD é explícito: só valem a pena confiar
+            nas conclusões a partir de ~30 trabalhos fechados reais.
           </p>
         </div>
       </div>
