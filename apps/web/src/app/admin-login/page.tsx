@@ -112,6 +112,16 @@ export default function AdminLoginPage() {
             </button>
           </form>
         </div>
+
+        <p className="mt-4 text-center text-xs text-zinc-500">
+          <a href="/privacy" className="hover:text-zinc-300 underline">
+            Privacidade
+          </a>
+          {" · "}
+          <a href="/terms" className="hover:text-zinc-300 underline">
+            Termos
+          </a>
+        </p>
       </div>
     </div>
   );

@@ -109,6 +109,16 @@ function LoginForm() {
             </button>
           </form>
         </div>
+
+        <p className="mt-4 text-center text-xs text-zinc-400">
+          <a href="/privacy" className="hover:text-zinc-600 underline">
+            Privacidade
+          </a>
+          {" · "}
+          <a href="/terms" className="hover:text-zinc-600 underline">
+            Termos
+          </a>
+        </p>
       </div>
     </div>
   );
