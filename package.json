@@ -22,6 +22,7 @@
     "proof:support-tickets": "npm run proof:support-tickets --workspace=apps/api",
     "proof:admin-analytics": "npm run proof:admin-analytics --workspace=apps/api",
     "proof:places": "npm run proof:places --workspace=apps/api",
+    "proof:pickup-plan-real-job": "npm run proof:pickup-plan-real-job --workspace=apps/api",
     "smoke:web": "node --env-file=apps/api/.env apps/web/test/smoke.mjs",
     "verify:schema": "node verify-schema.mjs 03-schema.sql",
     "verify:seed": "node verify-seed.mjs 03-schema.sql seed.sql",
@@ -46,6 +47,7 @@
     "esbuild@0.28.2": true,
     "fsevents@2.3.3": true,
     "sharp@0.34.5": true,
-    "fsevents@2.3.2": true
+    "fsevents@2.3.2": true,
+    "@sentry/cli@2.58.6": true
   }
 }

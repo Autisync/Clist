@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
 
 // Proxy every /api/* request from the Next.js app to the Fastify API.
 // This keeps all browser fetches same-origin (so the fr_session cookie is
@@ -35,4 +36,21 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+// withSentryConfig — adds source-map upload at build time (needs
+// SENTRY_AUTH_TOKEN, org/project below, from sentry.io -> Settings ->
+// Auth Tokens) and a couple of small runtime tunneling/tree-shaking
+// options. Unset SENTRY_AUTH_TOKEN doesn't fail the build — the plugin's
+// own documented behavior is to skip the upload step and warn, same
+// "swap in when a real credential shows up" shape as everything else in
+// this file. org/project match the ones the (TTY-incompatible, see
+// sentry.server.config.ts) wizard command was invoked with.
+export default withSentryConfig(nextConfig, {
+  org: "autisync",
+  project: "fieldready",
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  silent: !process.env.CI,
+  widenClientFileUpload: true,
+  webpack: {
+    treeshake: { removeDebugLogging: true },
+  },
+});
