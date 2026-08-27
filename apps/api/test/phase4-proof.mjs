@@ -19,7 +19,9 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
 import { readFileSync, existsSync } from "node:fs";
+import { Client } from "pg";
 import { resetFastifySchema, openDirectConnection } from "./db-reset.mjs";
+import { pgClientConfig } from "../supabase/verify-helpers.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../");
@@ -97,6 +99,19 @@ class Session {
 // ---- server process lifecycle ----------------------------------------------
 
 let serverProc = null;
+// Real Supabase connection + the mirrored tenant id (see main()'s own
+// comment on why this exists) -- module-level so finish() and the outer
+// catch handler can both clean it up regardless of which exit path runs.
+let publicSchemaClient = null;
+let mirroredTenantId = null;
+// Direct connection into the CLASSIC schema (db-reset.mjs's own
+// openDirectConnection) -- the flip side of the tenant/app_user mirror:
+// catalog items created via the now-public-schema-backed POST
+// /catalog-items also need a same-id row in the CLASSIC catalog_item
+// table, because job_checklist_item (still a classic-schema concept for
+// this proof's own pickup-plan job) has its own FK to the classic
+// catalog_item, unrelated to public.catalog_item entirely.
+let classicSchemaClient = null;
 
 function spawnServer() {
   return new Promise((resolve, reject) => {
@@ -183,6 +198,28 @@ function slugify(input) {
     .replace(/^-+|-+$/g, "");
 }
 
+// POSTs /catalog-items (now public-schema-backed, catalog.ts's own fix)
+// AND mirrors the same id/sku/name into the CLASSIC schema's own
+// catalog_item table via classicSchemaClient -- see main()'s comment on
+// classicSchemaClient for why: job_checklist_item (still classic for this
+// proof's pickup-plan job) FKs to the classic catalog_item, entirely
+// unrelated to public.catalog_item. Every catalog item this proof creates
+// goes through this helper now, not a bare officeA.post, so both schemas
+// always agree on the id even for items that turn out not to need the
+// classic side (harmless — an extra, unused row in an isolated,
+// per-run-dropped classic schema).
+async function createCatalogItemMirrored(session, sku, name) {
+  const res = await session.post("/catalog-items", { sku, name });
+  if (res.status === 201) {
+    await classicSchemaClient.query(
+      `insert into catalog_item (id, tenant_id, sku, name) values ($1, $2, $3, $4)
+       on conflict (id) do nothing;`,
+      [res.json.id, mirroredTenantId, sku, name]
+    );
+  }
+  return res;
+}
+
 // Creates a template of `kind`, publishes one version with `body`, and
 // activates it. Ported verbatim from phase2/3-proof.mjs.
 async function createAndActivateTemplate(session, { kind, code, title, body, activatePayload }) {
@@ -265,10 +302,52 @@ async function main() {
   if (loginA.status === 200) ok("auth: office A login succeeds");
   else { fail("auth: office A login succeeds", `status ${loginA.status}`); return finish(); }
 
+  // Mirror office A's CLASSIC tenant id into the real Supabase project's
+  // public.tenant — real bug, found and fixed the same session as
+  // suppliers.ts/catalog.ts/receipts.ts/domain/sourcing.ts's own versions
+  // of it: those files now correctly write/read public.catalog_item/
+  // public.supplier/public.supplier_price (the real, Supabase-native
+  // tables apps/web actually uses), which have a real FK to public.tenant.
+  // officeA authenticates via the classic fr_session cookie, whose
+  // tenant_id only ever existed in the classic schema's OWN tenant table
+  // -- inserting through the newly-fixed routes below would otherwise
+  // 23503 foreign-key-violate on every single catalog/supplier/price/
+  // receipt/sourcing call in this section. This mirror row, with the
+  // SAME id, satisfies that FK for the classic-authenticated session
+  // without switching this whole section to a real Supabase Auth bridge
+  // session — the classic job/checklist data these same fixtures feed
+  // into (pickup-plan below, still a classic-schema concept) still needs
+  // the classic tenant id to be the one requireAuth resolves either way.
+  // Deleted in finish() (both success and failure paths) — never left
+  // behind in the shared project.
+  publicSchemaClient = new Client(pgClientConfig(process.env.SUPABASE_PROJECT_REF, process.env.SUPABASE_DB_PASSWORD));
+  await publicSchemaClient.connect();
+  mirroredTenantId = fixtures.tenantAId;
+  await publicSchemaClient.query(
+    `insert into tenant (id, name, slug, compliance_profile) values ($1, $2, $3, 'ited_ready')
+     on conflict (id) do nothing;`,
+    [mirroredTenantId, "Phase 4 Proof (mirror)", `phase4-proof-mirror-${mirroredTenantId}`]
+  );
+  // Also mirrors office A's own app_user id -- supplier_price.created_by /
+  // receipt.confirmed_by both FK to app_user(id), and this classic
+  // session's req.auth!.user_id only ever existed in the classic schema's
+  // own app_user table. auth_user_id stays null (this mirror row never
+  // signs in for real -- the classic fr_session cookie is the only
+  // credential this proof ever uses), which is fine: that column is
+  // nullable exactly for technician-shaped rows, and nothing here reads it.
+  await publicSchemaClient.query(
+    `insert into app_user (id, tenant_id, role, full_name, email) values ($1, $2, 'owner', $3, $4)
+     on conflict (id) do nothing;`,
+    [fixtures.officeAId, mirroredTenantId, "Phase 4 Proof (mirror)", `phase4-proof-mirror-${fixtures.officeAId}@example.invalid`]
+  );
+  ok("public.tenant/app_user: mirrored office A's classic ids for the newly-public-schema-backed routes below");
+
+  classicSchemaClient = await openDirectConnection(FASTIFY_DB_SCHEMA);
+
   // ==== 1. Seed suppliers/catalog-items/prices, including a >3% rise =====
 
-  const catAlpha = await officeA.post("/catalog-items", { sku: "ALPHA-SRC-001", name: "Item Alpha — sourcing" });
-  const catGamma = await officeA.post("/catalog-items", { sku: "GAMMA-ALERT-001", name: "Item Gamma — price alert" });
+  const catAlpha = await createCatalogItemMirrored(officeA, "ALPHA-SRC-001", "Item Alpha — sourcing");
+  const catGamma = await createCatalogItemMirrored(officeA, "GAMMA-ALERT-001", "Item Gamma — price alert");
   if (catAlpha.status === 201 && catGamma.status === 201) ok("catalog-items: created (Alpha, Gamma)");
   else { fail("catalog-items: created", `${catAlpha.status} ${catGamma.status}`); return finish(); }
   const itemAlphaId = catAlpha.json.id;
@@ -304,8 +383,8 @@ async function main() {
 
   // ==== 2. Receipts: OCR-stub lines, one unmatched, selective confirm ====
 
-  const catCabo = await officeA.post("/catalog-items", { sku: "CABO-RG6-100", name: "Cabo coaxial RG6 (bobine 100m)" });
-  const catConector = await officeA.post("/catalog-items", { sku: "CONECTOR-F-COMP", name: "Conector F compressão" });
+  const catCabo = await createCatalogItemMirrored(officeA, "CABO-RG6-100", "Cabo coaxial RG6 (bobine 100m)");
+  const catConector = await createCatalogItemMirrored(officeA, "CONECTOR-F-COMP", "Conector F compressão");
   if (catCabo.status === 201 && catConector.status === 201) ok("catalog-items: created matching the fixture OCR provider's known lines");
   else { fail("catalog-items: created for receipt match", `${catCabo.status} ${catConector.status}`); return finish(); }
 
@@ -374,8 +453,8 @@ async function main() {
 
   // ==== 4. GET /jobs/:id/pickup-plan — (coverage, open-now, price) tuple =
 
-  const catPickupA = await officeA.post("/catalog-items", { sku: "PICKUP-A", name: "Peça Pickup A" });
-  const catPickupB = await officeA.post("/catalog-items", { sku: "PICKUP-B", name: "Peça Pickup B" });
+  const catPickupA = await createCatalogItemMirrored(officeA, "PICKUP-A", "Peça Pickup A");
+  const catPickupB = await createCatalogItemMirrored(officeA, "PICKUP-B", "Peça Pickup B");
   const itemPickupAId = catPickupA.json.id;
   const itemPickupBId = catPickupB.json.id;
 
@@ -658,8 +737,49 @@ async function main() {
   await finish();
 }
 
+// Deletes the mirrored public.tenant row (see main()'s own comment) and
+// every real row this run created under it, in FK-safe order (children
+// before the tenant itself -- none of these tables cascade-delete).
+// Idempotent/safe to call even if the mirror was never created (an early
+// failure before that point) or already cleaned up.
+async function cleanupMirroredTenant() {
+  if (classicSchemaClient) {
+    await classicSchemaClient.end().catch(() => {});
+    classicSchemaClient = null;
+  }
+  if (!publicSchemaClient || !mirroredTenantId) return;
+  // Each delete in its own try/catch, matching support-tickets-proof.mjs's
+  // own step() cleanup pattern -- a real incident this session's own first
+  // version of this function hit: one delete throwing (a cleanup-order bug,
+  // since fixed) aborted every delete after it, silently orphaning the
+  // tenant row itself in the shared project until caught and hand-cleaned
+  // up separately. FK-safe order below: receipt_line/receipt/supplier_price
+  // all reference app_user (confirmed_by/created_by), so app_user is
+  // deleted AFTER them, not before -- and before tenant, which everything
+  // references. supplier_price also FKs to receipt
+  // (fk_supplier_price_receipt), so it must go BEFORE receipt, not after.
+  async function step(label, sql) {
+    try {
+      await publicSchemaClient.query(sql, [mirroredTenantId]);
+    } catch (err) {
+      console.log(`  (cleanup warning: ${label} -> ${err.message})`);
+    }
+  }
+  await step("receipt_line", `delete from receipt_line where tenant_id = $1;`);
+  await step("supplier_price", `delete from supplier_price where tenant_id = $1;`);
+  await step("receipt", `delete from receipt where tenant_id = $1;`);
+  await step("catalog_item", `delete from catalog_item where tenant_id = $1;`);
+  await step("supplier", `delete from supplier where tenant_id = $1;`);
+  await step("app_user", `delete from app_user where tenant_id = $1;`);
+  await step("tenant", `delete from tenant where id = $1;`);
+  await publicSchemaClient.end().catch(() => {});
+  publicSchemaClient = null;
+  mirroredTenantId = null;
+}
+
 async function finish() {
   await killServerHard();
+  await cleanupMirroredTenant();
   console.log("\n" + (failures === 0
     ? "All Phase 4 exit-criterion checks passed."
     : `${failures} check(s) failed — see FAIL lines above.`));
@@ -669,5 +789,6 @@ async function finish() {
 main().catch(async (err) => {
   console.error("Proof script crashed:", err);
   await killServerHard();
+  await cleanupMirroredTenant();
   process.exit(1);
 });

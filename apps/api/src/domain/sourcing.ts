@@ -11,6 +11,15 @@
 //   - pickupPlan: multiple missing items, grouped by supplier, sorted by
 //     (items covered desc, currently-open desc, total price asc) -- the
 //     exact tuple the prototype's pickupPlan sorts on.
+//
+// sourcingOptions' own SQL is explicitly qualified `public.supplier`/
+// `public.supplier_price` — real bug, found and fixed the same session as
+// suppliers.ts/receipts.ts/catalog.ts's own versions of it: this function
+// takes whatever DbTx its caller passes, and prices/suppliers only mean
+// anything real from the Supabase-native public schema apps/web actually
+// reads/writes. Callers must pass a withPublicSchema-backed DbTx, not
+// withTenant's classic-schema one (catalog.ts's /catalog-items/:id/sourcing
+// already does).
 
 import type { DbTx } from "../db.js";
 import type { SupplierHours } from "@fieldready/core";
@@ -124,8 +133,8 @@ export async function sourcingOptions(
             s.place_id as supplier_place_id, s.distance_km as supplier_distance_km,
             s.synced_at as supplier_synced_at, s.hours as supplier_hours,
             s.created_at as supplier_created_at
-     from supplier_price sp
-     join supplier s on s.id = sp.supplier_id and s.tenant_id = sp.tenant_id
+     from public.supplier_price sp
+     join public.supplier s on s.id = sp.supplier_id and s.tenant_id = sp.tenant_id
      where sp.item_id = $1 and sp.tenant_id = $2
      order by sp.price asc;`,
     [itemId, tenantId]

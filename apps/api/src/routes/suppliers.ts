@@ -1,7 +1,18 @@
 // 04-API-SPEC.md §3, 03-schema.sql §5, 07-phase4-cost-intelligence.md §3/§4.
-// Same route-file pattern as catalog.ts/clients.ts/equipment.ts:
-// requireAuth preHandler, withTenant for every query, parameterized SQL
-// only, tenant_id always from req.auth, never the client.
+// requireAuth preHandler, parameterized SQL only, tenant_id always from
+// req.auth, never the client.
+//
+// Every route in this file uses withPublicSchema, not withTenant — real
+// bug, found and fixed the same session the office "create supplier" UI
+// first made it reachable: supplier/supplier_price/catalog_item all have
+// two copies in this project (the classic system's own, and the real,
+// Supabase-native public.* ones apps/web actually reads/writes via
+// Supabase directly). withTenant queried the classic copy exclusively,
+// completely disconnected from every real supplier a tenant could
+// actually see or create. withPublicSchema bypasses RLS (same trusted
+// connection withMigrator/technicians.ts already use for this exact class
+// of problem), so tenant_id is checked explicitly in every query below
+// rather than relying on RLS to scope it.
 
 import type { FastifyInstance } from "fastify";
 import {
@@ -9,7 +20,7 @@ import {
   UpdateSupplierRequest,
   RecordSupplierPriceRequest,
 } from "@fieldready/core";
-import { withTenant } from "../db.js";
+import { withPublicSchema } from "../db.js";
 import { requireAuth } from "../auth/middleware.js";
 import { placesProvider, PlacesApiError, type PlacesRefreshResult } from "../places-provider.js";
 
@@ -17,12 +28,14 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
   app.addHook("preHandler", requireAuth);
 
   app.get("/suppliers", async (req, reply) => {
-    const rows = await withTenant(req.auth!.tenant_id, (tx) =>
-      tx.query(
+    const rows = await withPublicSchema((db) =>
+      db.query(
         `select id, tenant_id, name, category, address, phone, account_note,
                 place_id, distance_km, synced_at, hours, created_at
-         from supplier
-         order by name asc;`
+         from public.supplier
+         where tenant_id = $1
+         order by name asc;`,
+        [req.auth!.tenant_id]
       )
     );
     return reply.send({ suppliers: rows.rows });
@@ -32,9 +45,9 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
     const body = CreateSupplierRequest.parse(req.body);
     const tenantId = req.auth!.tenant_id;
 
-    const created = await withTenant(tenantId, (tx) =>
-      tx.query<{ id: string }>(
-        `insert into supplier (tenant_id, name, category, address, phone, account_note,
+    const created = await withPublicSchema((db) =>
+      db.query<{ id: string }>(
+        `insert into public.supplier (tenant_id, name, category, address, phone, account_note,
                                 place_id, distance_km, hours)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          returning id;`,
@@ -59,9 +72,9 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
     const body = UpdateSupplierRequest.parse(req.body);
     const tenantId = req.auth!.tenant_id;
 
-    const updated = await withTenant(tenantId, (tx) =>
-      tx.query<{ id: string }>(
-        `update supplier
+    const updated = await withPublicSchema((db) =>
+      db.query<{ id: string }>(
+        `update public.supplier
          set name = coalesce($1, name),
              category = coalesce($2, category),
              address = coalesce($3, address),
@@ -98,17 +111,32 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
   // external source of record" shape as any future real integration
   // would have.
   //
-  // Split into two withTenant calls (read, then write) with the Places
-  // call sandwiched in between OUTSIDE either transaction — a slow or
-  // failed third-party call must never hold a DB connection/transaction
+  // Split into two withPublicSchema calls (read, then write) with the
+  // Places call sandwiched in between OUTSIDE either transaction — a slow
+  // or failed third-party call must never hold a DB connection/transaction
   // open, same reasoning as routes/receipts.ts's own OCR call being
   // deliberately outside its withTenant block.
+  //
+  // withPublicSchema, not withTenant — real bug, found and fixed the same
+  // session the office "create supplier" UI first made it reachable: the
+  // office suppliers page (apps/web) reads/writes `public.supplier`
+  // directly via Supabase (§6 Step 5's migration), a COMPLETELY SEPARATE
+  // table from this classic system's own `supplier` (03-schema.sql,
+  // whatever this connection's search_path normally resolves to —
+  // FASTIFY_DB_SCHEMA, db.ts). withTenant here was silently 404ing
+  // "supplier_not_found" for every real, Supabase-native supplier, since
+  // it was querying the wrong table entirely — dormant until a supplier
+  // could actually be created through the real UI, which is exactly what
+  // exposed it. withPublicSchema bypasses RLS (same trusted connection
+  // withMigrator/technicians.ts already use for this exact class of
+  // problem), so tenant_id is now checked explicitly in both queries
+  // below rather than relying on RLS to scope them.
   app.post<{ Params: { id: string } }>("/suppliers/:id/refresh-places", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
 
-    const found = await withTenant(tenantId, (tx) =>
-      tx.query<{ id: string; place_id: string | null }>(
-        `select id, place_id from supplier where id = $1 and tenant_id = $2;`,
+    const found = await withPublicSchema((db) =>
+      db.query<{ id: string; place_id: string | null }>(
+        `select id, place_id from public.supplier where id = $1 and tenant_id = $2;`,
         [req.params.id, tenantId]
       )
     );
@@ -129,14 +157,14 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
       refreshed = { address: null, phone: null, hours: null };
     }
 
-    const updated = await withTenant(tenantId, (tx) =>
-      tx.query(
-        `update supplier
+    const updated = await withPublicSchema((db) =>
+      db.query(
+        `update public.supplier
          set address = coalesce($1, address),
              phone = coalesce($2, phone),
              hours = coalesce($3, hours),
              synced_at = now()
-         where id = $4
+         where id = $4 and tenant_id = $5
          returning id, tenant_id, name, category, address, phone, account_note,
                    place_id, distance_km, synced_at, hours, created_at;`,
         [
@@ -144,6 +172,7 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
           refreshed.phone,
           refreshed.hours !== null ? JSON.stringify(refreshed.hours) : null,
           supplier.id,
+          tenantId,
         ]
       )
     );
@@ -153,13 +182,13 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>("/suppliers/:id/prices", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
 
-    const rows = await withTenant(tenantId, (tx) =>
-      tx.query(
+    const rows = await withPublicSchema((db) =>
+      db.query(
         `select sp.id, sp.tenant_id, sp.supplier_id, sp.item_id, sp.price, sp.prev_price,
                 sp.source, sp.effective_at, sp.receipt_id, sp.created_by,
                 ci.sku as item_sku, ci.name as item_name, ci.unit as item_unit
-         from supplier_price sp
-         join catalog_item ci on ci.id = sp.item_id
+         from public.supplier_price sp
+         join public.catalog_item ci on ci.id = sp.item_id
          where sp.supplier_id = $1 and sp.tenant_id = $2
          order by ci.name asc;`,
         [req.params.id, tenantId]
@@ -188,15 +217,15 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
     const supplierId = req.params.id;
     const userId = req.auth!.user_id;
 
-    const outcome = await withTenant(tenantId, async (tx) => {
-      const supplierRows = await tx.query<{ id: string }>(
-        `select id from supplier where id = $1 and tenant_id = $2;`,
+    const outcome = await withPublicSchema(async (db) => {
+      const supplierRows = await db.query<{ id: string }>(
+        `select id from public.supplier where id = $1 and tenant_id = $2;`,
         [supplierId, tenantId]
       );
       if (supplierRows.rows.length === 0) return { kind: "supplier_not_found" as const };
 
-      const existingRows = await tx.query<{ id: string; price: string }>(
-        `select id, price from supplier_price
+      const existingRows = await db.query<{ id: string; price: string }>(
+        `select id, price from public.supplier_price
          where tenant_id = $1 and supplier_id = $2 and item_id = $3
          order by effective_at desc
          limit 1;`,
@@ -206,8 +235,8 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
       let row;
       if (existingRows.rows.length > 0) {
         const existing = existingRows.rows[0];
-        const result = await tx.query(
-          `update supplier_price
+        const result = await db.query(
+          `update public.supplier_price
            set prev_price = $1, price = $2, source = 'manual', effective_at = now(),
                receipt_id = null, created_by = $3
            where id = $4
@@ -216,8 +245,8 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
         );
         row = result.rows[0];
       } else {
-        const result = await tx.query(
-          `insert into supplier_price (tenant_id, supplier_id, item_id, price, prev_price,
+        const result = await db.query(
+          `insert into public.supplier_price (tenant_id, supplier_id, item_id, price, prev_price,
                                         source, created_by)
            values ($1, $2, $3, $4, null, 'manual', $5)
            returning *;`,

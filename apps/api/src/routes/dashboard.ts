@@ -12,7 +12,7 @@
 // real.
 
 import type { FastifyInstance } from "fastify";
-import { withTenant, type DbTx } from "../db.js";
+import { withTenant, withPublicSchema, type DbTx } from "../db.js";
 import { requireAuth } from "../auth/middleware.js";
 import { sourcingOptions } from "../domain/sourcing.js";
 
@@ -155,15 +155,29 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   app.get("/dashboard/price-alerts", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
 
-    const alerts = await withTenant(tenantId, async (tx: DbTx) => {
-      const rows = await tx.query<
+    // withPublicSchema, not withTenant — real bug, found and fixed the
+    // same session as suppliers.ts/catalog.ts/domain/sourcing.ts's own
+    // versions of it: withTenant's connection runs as the `fieldready_app`
+    // role (SET LOCAL ROLE, db.ts), which has no grant at all on public.*
+    // — v_price_alerts/catalog_item/supplier/sourcingOptions all read
+    // there now (this session's own fix, since that's where real prices
+    // live), so withTenant here 500ed with "permission denied for table
+    // supplier_price", not a schema-qualification problem. This whole
+    // route touches nothing classic-schema-specific, so it moves to
+    // withPublicSchema entirely rather than splitting connections the way
+    // jobs.ts's pickup-plan route needed to. Also legacy/unused by the
+    // real client either way (apps/web/src/lib/dashboard.ts already ports
+    // this logic to a direct Supabase read) — fixed for internal
+    // consistency and in case anything else ever calls it.
+    const alerts = await withPublicSchema(async (db: DbTx) => {
+      const rows = await db.query<
         PriceAlertRow & { item_name: string; item_sku: string; supplier_name: string }
       >(
         `select pa.tenant_id, pa.item_id, pa.supplier_id, pa.price, pa.prev_price, pa.delta_pct,
                 ci.name as item_name, ci.sku as item_sku, s.name as supplier_name
-         from v_price_alerts pa
-         join catalog_item ci on ci.id = pa.item_id and ci.tenant_id = pa.tenant_id
-         join supplier s on s.id = pa.supplier_id and s.tenant_id = pa.tenant_id
+         from public.v_price_alerts pa
+         join public.catalog_item ci on ci.id = pa.item_id and ci.tenant_id = pa.tenant_id
+         join public.supplier s on s.id = pa.supplier_id and s.tenant_id = pa.tenant_id
          where pa.tenant_id = $1
          order by pa.delta_pct desc;`,
         [tenantId]
@@ -175,7 +189,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
         // one that just went up -- sourcingOptions is already sorted price
         // ascending, so the first non-matching row is the cheapest
         // alternative (priceAlerts, fieldready-prototype.jsx line 457).
-        const options = await sourcingOptions(tx, tenantId, row.item_id);
+        const options = await sourcingOptions(db, tenantId, row.item_id);
         const alt = options.find((o) => o.supplier_id !== row.supplier_id) ?? null;
 
         result.push({
@@ -214,9 +228,14 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   app.get("/dashboard/recommended-actions", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
 
-    const actions = await withTenant(tenantId, async (tx: DbTx) => {
-      const out: { priority: "Alta" | "Média" | "Baixa"; title: string; why: string }[] = [];
+    // Declared outside both connections below (not returned/reassigned
+    // from either) so sections 1-2 (withTenant, classic schema) and
+    // section 3 (withPublicSchema, public schema) can both append to the
+    // same list — see the withPublicSchema call's own comment on why this
+    // needs two separate connections at all.
+    const out: { priority: "Alta" | "Média" | "Baixa"; title: string; why: string }[] = [];
 
+    await withTenant(tenantId, async (tx: DbTx) => {
       // 1. Readiness-gate action -- mirrors the prototype's first static
       // action exactly, now computed from v_readiness_correlation.
       const correlationRows = await tx.query<ReadinessCorrelationRow>(
@@ -260,24 +279,35 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
           why: `Desvio médio de +${pct}% sobre ${Number(worstVariance.n)} trabalho(s). Cada trabalho perde margem face ao orçamentado.`,
         });
       }
+    });
 
+    // Section 3 (supplier-switch) is a SEPARATE withPublicSchema call, not
+    // folded into the withTenant block above -- same "permission denied
+    // for table supplier_price" reasoning GET /dashboard/price-alerts'
+    // own comment gives: withTenant's fieldready_app role has no grant on
+    // public.* at all, where v_price_alerts/catalog_item/supplier/
+    // sourcingOptions now unconditionally read. Sections 1-2 stay on
+    // withTenant since v_readiness_correlation/v_hours_variance are
+    // genuinely classic-schema-only concepts (real job/job_closeout data
+    // from this proof's own classic job-loop fixtures).
+    await withPublicSchema(async (db: DbTx) => {
       // 3. Supplier-switch action -- mirrors the prototype's third static
       // action, now the real top price alert (by delta_pct) that has a
       // cheaper alternative supplier for the same item.
-      const alertRows = await tx.query<
+      const alertRows = await db.query<
         PriceAlertRow & { item_name: string; supplier_name: string }
       >(
         `select pa.tenant_id, pa.item_id, pa.supplier_id, pa.price, pa.prev_price, pa.delta_pct,
                 ci.name as item_name, s.name as supplier_name
-         from v_price_alerts pa
-         join catalog_item ci on ci.id = pa.item_id and ci.tenant_id = pa.tenant_id
-         join supplier s on s.id = pa.supplier_id and s.tenant_id = pa.tenant_id
+         from public.v_price_alerts pa
+         join public.catalog_item ci on ci.id = pa.item_id and ci.tenant_id = pa.tenant_id
+         join public.supplier s on s.id = pa.supplier_id and s.tenant_id = pa.tenant_id
          where pa.tenant_id = $1
          order by pa.delta_pct desc;`,
         [tenantId]
       );
       for (const alertRow of alertRows.rows) {
-        const options = await sourcingOptions(tx, tenantId, alertRow.item_id);
+        const options = await sourcingOptions(db, tenantId, alertRow.item_id);
         const alt = options.find((o) => o.supplier_id !== alertRow.supplier_id) ?? null;
         const price = Number(alertRow.price);
         if (alt && alt.price < price) {
@@ -290,10 +320,8 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
           break; // only the single best supplier-switch action, same as the prototype's list (one entry per action kind).
         }
       }
-
-      return out;
     });
 
-    return reply.send({ actions });
+    return reply.send({ actions: out });
   });
 }

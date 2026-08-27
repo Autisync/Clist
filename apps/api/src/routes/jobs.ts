@@ -18,7 +18,7 @@ import {
   JobCloseoutTechnicianRequest,
   JobCloseoutReworkCauseRequest,
 } from "@fieldready/core";
-import { withTenant } from "../db.js";
+import { withTenant, withPublicSchema } from "../db.js";
 import { requireAuth } from "../auth/middleware.js";
 import { evaluateDispatchGate } from "../domain/dispatch-gate.js";
 import { objectStore } from "../object-store.js";
@@ -155,7 +155,19 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>("/jobs/:id/pickup-plan", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
 
-    const result = await withTenant(tenantId, async (tx) => {
+    // Two connections, not one -- real bug, found and fixed the same
+    // session as suppliers.ts/catalog.ts/dashboard.ts's own versions of
+    // it: withTenant's connection runs as the `fieldready_app` role
+    // (SET LOCAL ROLE, db.ts), which has grants on this classic schema's
+    // OWN tables (job/job_checklist_item, read below) but none at all on
+    // public.* — domain/sourcing.ts's pickupPlan/sourcingOptions now
+    // unconditionally read public.supplier_price/public.supplier (this
+    // session's own fix, since that's where real prices/suppliers live),
+    // which a fieldready_app-scoped tx 500s on with "permission denied
+    // for table supplier_price", not a schema-qualification problem at
+    // all. withPublicSchema's connection has the access pickupPlan needs;
+    // the classic job/checklist lookup stays on withTenant unchanged.
+    const missing = await withTenant(tenantId, async (tx) => {
       const jobRows = await tx.query(`select id from job where id = $1 and tenant_id = $2;`, [
         req.params.id,
         tenantId,
@@ -182,13 +194,12 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
         item_id: row.item_id,
         qty: Number(row.qty),
       }));
-
-      const plan = await pickupPlan(tx, tenantId, missingItems);
-      return { kind: "ok" as const, plan };
+      return { kind: "ok" as const, missingItems };
     });
 
-    if (result.kind === "not_found") return reply.code(404).send({ error: "job_not_found" });
-    return reply.send({ plan: result.plan });
+    if (missing.kind === "not_found") return reply.code(404).send({ error: "job_not_found" });
+    const plan = await withPublicSchema((db) => pickupPlan(db, tenantId, missing.missingItems));
+    return reply.send({ plan });
   });
 
   // Office-side direct write, NOT for phone use (§5) -- the phone submits

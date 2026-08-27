@@ -40,7 +40,9 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
 import { readFileSync, existsSync } from "node:fs";
+import { Client } from "pg";
 import { resetFastifySchema } from "./db-reset.mjs";
+import { pgClientConfig } from "../supabase/verify-helpers.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../../");
@@ -81,6 +83,8 @@ class Session {
 }
 
 let serverProc = null;
+let publicSchemaClient = null;
+let mirroredTenantId = null;
 function spawnServer() {
   return new Promise((resolve, reject) => {
     const proc = spawn(
@@ -142,13 +146,30 @@ async function main() {
     ok("server booted with a real Places key configured, /health is green");
 
     if (!existsSync(FIXTURES_PATH)) { fail("fixtures file present", `expected at ${FIXTURES_PATH}`); return finish(); }
-    JSON.parse(readFileSync(FIXTURES_PATH, "utf8"));
+    const fixturesData = JSON.parse(readFileSync(FIXTURES_PATH, "utf8"));
     ok("fixtures loaded");
 
     const officeA = new Session();
     const loginA = await officeA.post("/auth/office/login", { email: CREDS.officeAEmail, password: CREDS.officeAPassword });
     if (loginA.status === 200) ok("auth: office A login succeeds");
     else { fail("auth: office A login succeeds", `status ${loginA.status}`); return finish(); }
+
+    // Mirror office A's classic tenant id into the real Supabase project's
+    // public.tenant — same real bug/fix as phase4-proof.mjs's own
+    // identical comment: suppliers.ts's routes now correctly write
+    // public.supplier (the real, Supabase-native table), which has a real
+    // FK to public.tenant, and officeA's classic fr_session tenant_id
+    // only ever existed in the classic schema's own tenant table before
+    // this. Cleaned up in the finally block below no matter what.
+    publicSchemaClient = new Client(pgClientConfig(process.env.SUPABASE_PROJECT_REF, process.env.SUPABASE_DB_PASSWORD));
+    await publicSchemaClient.connect();
+    mirroredTenantId = fixturesData.tenantAId;
+    await publicSchemaClient.query(
+      `insert into tenant (id, name, slug, compliance_profile) values ($1, $2, $3, 'ited_ready')
+       on conflict (id) do nothing;`,
+      [mirroredTenantId, "Places Proof (mirror)", `places-proof-mirror-${mirroredTenantId}`]
+    );
+    ok("public.tenant: mirrored office A's classic tenant id for the newly-public-schema-backed suppliers.ts routes below");
 
     // A real, well-known Google place id (Sydney Opera House) — chosen
     // specifically so a 404 here would mean something is actually wrong,
@@ -186,6 +207,21 @@ async function main() {
   } finally {
     await killServerHard();
     rmSync(RUNTIME_DIR, { recursive: true, force: true });
+    if (publicSchemaClient && mirroredTenantId) {
+      // Each delete in its own try/catch (phase4-proof.mjs's own
+      // cleanupMirroredTenant comment explains why: one throwing must
+      // never abort the rest and orphan the tenant row in the shared
+      // project). This script only ever creates supplier rows under the
+      // mirror (no catalog_item/supplier_price/receipt/app_user), so the
+      // FK-safe order is shorter than phase4-proof.mjs's own version.
+      const step = async (label, sql) => {
+        try { await publicSchemaClient.query(sql, [mirroredTenantId]); }
+        catch (err) { console.log(`  (cleanup warning: ${label} -> ${err.message})`); }
+      };
+      await step("supplier", `delete from supplier where tenant_id = $1;`);
+      await step("tenant", `delete from tenant where id = $1;`);
+      await publicSchemaClient.end().catch(() => {});
+    }
   }
 
   finish();

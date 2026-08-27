@@ -1,8 +1,6 @@
 // 04-API-SPEC.md §3, 03-schema.sql §5, 07-phase4-cost-intelligence.md §5.
-// Same route-file pattern as suppliers.ts/jobs.ts: requireAuth preHandler,
-// withTenant for every query, parameterized SQL only, tenant_id always from
-// req.auth, never the client. Multipart handling (metadata fields + one
-// file part) mirrors POST /jobs/:id/photos in jobs.ts exactly.
+// Multipart handling (metadata fields + one file part) mirrors POST
+// /jobs/:id/photos in jobs.ts exactly.
 //
 // The one rule this whole file exists to enforce (04-API-SPEC.md §3,
 // non-negotiable): OCR output is NEVER written to supplier_price directly.
@@ -10,11 +8,34 @@
 // /receipts/:id/confirm -- a human action -- is the only place a
 // supplier_price row gets written from OCR-derived data, and only for the
 // line_ids the human actually confirmed.
+//
+// withPublicSchema, not withTenant -- real bug, found and fixed the same
+// session the office "create supplier" UI first made it reachable: every
+// table this file touches (supplier, catalog_item, supplier_price,
+// receipt, receipt_line) has TWO copies in this project -- the classic
+// system's own (03-schema.sql, whatever this connection's search_path
+// normally resolves to) and the real, Supabase-native one (public.*,
+// apps/api/supabase/schema.sql) apps/web actually reads/writes via
+// Supabase directly. withTenant queried the classic copy exclusively,
+// which was silently disconnected from every real supplier/catalog_item a
+// tenant could actually see -- dormant until a supplier could be created
+// through the real UI at all (suppliers-client.tsx's own fix, same
+// session), which is exactly what exposed it: every receipt upload with a
+// real supplier_id would have 404'd, and a receipt with none would have
+// inserted rows nothing in the real app could ever read back, plus
+// FK-violated the moment its item_id/supplier_id pointed at a real
+// public.* id the classic schema's own FK constraints don't recognize.
+// withPublicSchema bypasses RLS (same trusted connection
+// withMigrator/technicians.ts already use for this exact class of
+// problem), so tenant_id is checked explicitly everywhere below rather
+// than relying on RLS to scope it -- every query already did this except
+// the plain inserts, which don't need it (tenant_id there is a
+// server-controlled column value, not a WHERE-clause trust boundary).
 
 import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { CreateReceiptRequest, ConfirmReceiptLinesRequest } from "@fieldready/core";
-import { withTenant } from "../db.js";
+import { withPublicSchema } from "../db.js";
 import { requireAuth } from "../auth/middleware.js";
 import { objectStore } from "../object-store.js";
 import { receiptOcrProvider, ReceiptOcrError, type ReceiptOcrResult } from "../receipt-ocr-provider.js";
@@ -65,17 +86,17 @@ export async function receiptRoutes(app: FastifyInstance): Promise<void> {
       ocrResult = { lines: [] };
     }
 
-    const result = await withTenant(tenantId, async (tx) => {
+    const result = await withPublicSchema(async (db) => {
       if (metadata.supplier_id) {
-        const supplierRows = await tx.query(
-          `select id from supplier where id = $1 and tenant_id = $2;`,
+        const supplierRows = await db.query(
+          `select id from public.supplier where id = $1 and tenant_id = $2;`,
           [metadata.supplier_id, tenantId]
         );
         if (supplierRows.rows.length === 0) return { kind: "supplier_not_found" as const };
       }
 
-      const receiptRows = await tx.query<{ id: string }>(
-        `insert into receipt (tenant_id, supplier_id, doc_number, receipt_date, image_file, ocr_raw, status)
+      const receiptRows = await db.query<{ id: string }>(
+        `insert into public.receipt (tenant_id, supplier_id, doc_number, receipt_date, image_file, ocr_raw, status)
          values ($1, $2, $3, $4, $5, $6, 'pending')
          returning id;`,
         [
@@ -98,16 +119,16 @@ export async function receiptRoutes(app: FastifyInstance): Promise<void> {
         // match an existing catalog_item by name or sku (case-insensitive)
         // is inserted with item_id = null for office review, not dropped
         // and not guessed at.
-        const matchRows = await tx.query<{ id: string }>(
-          `select id from catalog_item
+        const matchRows = await db.query<{ id: string }>(
+          `select id from public.catalog_item
            where tenant_id = $1 and (lower(name) = lower($2) or lower(sku) = lower($2))
            limit 1;`,
           [tenantId, line.description]
         );
         const itemId = matchRows.rows[0]?.id ?? null;
 
-        const inserted = await tx.query(
-          `insert into receipt_line (tenant_id, receipt_id, item_id, description, qty, unit_price)
+        const inserted = await db.query(
+          `insert into public.receipt_line (tenant_id, receipt_id, item_id, description, qty, unit_price)
            values ($1, $2, $3, $4, $5, $6)
            returning id, tenant_id, receipt_id, item_id, description, qty, unit_price;`,
           [tenantId, receiptId, itemId, line.description, line.qty, line.unit_price]
@@ -125,19 +146,19 @@ export async function receiptRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>("/receipts/:id", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
 
-    const result = await withTenant(tenantId, async (tx) => {
-      const receiptRows = await tx.query(
+    const result = await withPublicSchema(async (db) => {
+      const receiptRows = await db.query(
         `select id, tenant_id, supplier_id, doc_number, receipt_date, image_file, ocr_raw,
                 status, confirmed_by, confirmed_at, created_at
-         from receipt
+         from public.receipt
          where id = $1 and tenant_id = $2;`,
         [req.params.id, tenantId]
       );
       if (receiptRows.rows.length === 0) return { kind: "not_found" as const };
 
-      const lineRows = await tx.query(
+      const lineRows = await db.query(
         `select id, tenant_id, receipt_id, item_id, description, qty, unit_price
-         from receipt_line
+         from public.receipt_line
          where receipt_id = $1 and tenant_id = $2
          order by description asc;`,
         [req.params.id, tenantId]
@@ -160,21 +181,21 @@ export async function receiptRoutes(app: FastifyInstance): Promise<void> {
     const userId = req.auth!.user_id;
     const receiptId = req.params.id;
 
-    const result = await withTenant(tenantId, async (tx) => {
-      const receiptRows = await tx.query<{ id: string; supplier_id: string | null }>(
-        `select id, supplier_id from receipt where id = $1 and tenant_id = $2;`,
+    const result = await withPublicSchema(async (db) => {
+      const receiptRows = await db.query<{ id: string; supplier_id: string | null }>(
+        `select id, supplier_id from public.receipt where id = $1 and tenant_id = $2;`,
         [receiptId, tenantId]
       );
       if (receiptRows.rows.length === 0) return { kind: "not_found" as const };
       const receipt = receiptRows.rows[0];
 
-      const lineRows = await tx.query<{
+      const lineRows = await db.query<{
         id: string;
         item_id: string | null;
         unit_price: string;
       }>(
         `select id, item_id, unit_price
-         from receipt_line
+         from public.receipt_line
          where receipt_id = $1 and tenant_id = $2 and id = any($3::uuid[]);`,
         [receiptId, tenantId, body.line_ids]
       );
@@ -190,8 +211,8 @@ export async function receiptRoutes(app: FastifyInstance): Promise<void> {
         // the existing row in place rather than inserting a new one, so
         // repeat receipt-confirmations for the same supplier+item don't
         // accumulate duplicate "current" rows.
-        const existingRows = await tx.query<{ id: string; price: string }>(
-          `select id, price from supplier_price
+        const existingRows = await db.query<{ id: string; price: string }>(
+          `select id, price from public.supplier_price
            where tenant_id = $1 and supplier_id = $2 and item_id = $3
            order by effective_at desc
            limit 1;`,
@@ -201,8 +222,8 @@ export async function receiptRoutes(app: FastifyInstance): Promise<void> {
         let row;
         if (existingRows.rows.length > 0) {
           const existing = existingRows.rows[0];
-          const updated = await tx.query(
-            `update supplier_price
+          const updated = await db.query(
+            `update public.supplier_price
              set prev_price = $1, price = $2, source = 'receipt', effective_at = now(),
                  receipt_id = $3, created_by = $4
              where id = $5
@@ -211,8 +232,8 @@ export async function receiptRoutes(app: FastifyInstance): Promise<void> {
           );
           row = updated.rows[0];
         } else {
-          const inserted = await tx.query(
-            `insert into supplier_price (tenant_id, supplier_id, item_id, price, prev_price,
+          const inserted = await db.query(
+            `insert into public.supplier_price (tenant_id, supplier_id, item_id, price, prev_price,
                                           source, receipt_id, created_by)
              values ($1, $2, $3, $4, null, 'receipt', $5, $6)
              returning *;`,
@@ -223,10 +244,10 @@ export async function receiptRoutes(app: FastifyInstance): Promise<void> {
         confirmedPrices.push(row);
       }
 
-      await tx.query(
-        `update receipt set status = 'confirmed', confirmed_by = $1, confirmed_at = now()
-         where id = $2;`,
-        [userId, receiptId]
+      await db.query(
+        `update public.receipt set status = 'confirmed', confirmed_by = $1, confirmed_at = now()
+         where id = $2 and tenant_id = $3;`,
+        [userId, receiptId, tenantId]
       );
 
       return { kind: "ok" as const, confirmedPrices };
