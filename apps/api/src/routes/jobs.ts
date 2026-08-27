@@ -348,6 +348,24 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
   // route validates its body -- via the Zod schema -- just read off
   // data.fields instead of req.body, since @fastify/multipart's promise API
   // (req.file()) is what parses them, not the JSON body parser.
+  // Tries the REAL, Supabase-native public.job first, falls back to the
+  // classic schema's own job table — same dual-path shape this file's own
+  // pickup-plan route already established, for the same reason: real jobs
+  // (the field client's tests/voice pages, the office's job-detail page)
+  // only ever exist in public.job; phase2-proof.mjs's own classic
+  // dispatch-loop fixture only ever exists in the classic schema, and
+  // both id spaces are UUIDs, indistinguishable by format alone.
+  //
+  // This was a REAL bug, not a hypothetical — confirmed empirically (a
+  // real photo upload against a real job, over HTTP, returned
+  // job_not_found) before this fix: withTenant's classic-only `select id
+  // from job where id = $1` could never find a real job, 404ing every
+  // single real photo upload. Unlike refresh-places/receipts.ts, there
+  // was no graceful-degradation path masking this — it was a hard 404
+  // every time, for every real job, since whichever migration ported job
+  // creation to Supabase-native never touched this one still-Fastify-
+  // backed route (binary bytes, per CLAUDE.md's own note on why it stays
+  // that way).
   app.post<{ Params: { id: string } }>("/jobs/:id/photos", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
     const jobId = req.params.id;
@@ -372,18 +390,35 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
     const key = crypto.randomUUID();
     await objectStore.put(key, buffer);
 
-    const result = await withTenant(tenantId, async (tx) => {
-      const jobRows = await tx.query(`select id from job where id = $1;`, [jobId]);
-      if (jobRows.rows.length === 0) return { kind: "not_found" as const };
+    const realJob = await withPublicSchema((db) =>
+      db.query(`select id from public.job where id = $1 and tenant_id = $2;`, [jobId, tenantId])
+    );
 
-      const inserted = await tx.query(
-        `insert into job_photo (tenant_id, job_id, phase, required_tag, file, taken_by)
-         values ($1, $2, $3, $4, $5, $6)
-         returning id, job_id, phase, required_tag, file, taken_at, taken_by;`,
-        [tenantId, jobId, metadata.phase, metadata.required_tag ?? null, key, req.auth!.user_id]
+    let result: { kind: "not_found" } | { kind: "ok"; row: Record<string, unknown> };
+    if (realJob.rows.length > 0) {
+      const inserted = await withPublicSchema((db) =>
+        db.query(
+          `insert into public.job_photo (tenant_id, job_id, phase, required_tag, file, taken_by)
+           values ($1, $2, $3, $4, $5, $6)
+           returning id, job_id, phase, required_tag, file, taken_at, taken_by;`,
+          [tenantId, jobId, metadata.phase, metadata.required_tag ?? null, key, req.auth!.user_id]
+        )
       );
-      return { kind: "ok" as const, row: inserted.rows[0] };
-    });
+      result = { kind: "ok", row: inserted.rows[0] };
+    } else {
+      result = await withTenant(tenantId, async (tx) => {
+        const jobRows = await tx.query(`select id from job where id = $1;`, [jobId]);
+        if (jobRows.rows.length === 0) return { kind: "not_found" as const };
+
+        const inserted = await tx.query(
+          `insert into job_photo (tenant_id, job_id, phase, required_tag, file, taken_by)
+           values ($1, $2, $3, $4, $5, $6)
+           returning id, job_id, phase, required_tag, file, taken_at, taken_by;`,
+          [tenantId, jobId, metadata.phase, metadata.required_tag ?? null, key, req.auth!.user_id]
+        );
+        return { kind: "ok" as const, row: inserted.rows[0] };
+      });
+    }
 
     if (result.kind === "not_found") return reply.code(404).send({ error: "job_not_found" });
     return reply.send(result.row);
