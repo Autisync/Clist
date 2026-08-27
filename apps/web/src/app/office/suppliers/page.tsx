@@ -38,13 +38,10 @@ export default async function SuppliersPage() {
         <h1 className="text-lg font-semibold text-zinc-900">Fornecedores</h1>
       </div>
 
-      {allSuppliers.length === 0 ? (
-        <div className="bg-white rounded border border-dashed border-zinc-300 p-6 text-sm text-zinc-500">
-          Ainda não existem fornecedores.
-        </div>
-      ) : (
-        <SuppliersClient initialSuppliers={allSuppliers} catalogItems={catalogItems ?? []} />
-      )}
+      {/* Always rendered, even with zero suppliers — SuppliersClient itself
+          owns the empty state now (its own "Novo fornecedor" form is the
+          only way a brand-new tenant can ever create a first supplier). */}
+      <SuppliersClient initialSuppliers={allSuppliers} catalogItems={catalogItems ?? []} />
     </div>
   );
 }
