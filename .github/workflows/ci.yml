@@ -1,0 +1,44 @@
+name: CI
+
+# Runs on every push and PR — build + typecheck across all three
+# workspaces, plus the schema/RLS/seed verification suite. Deliberately
+# secret-free: verify-schema.mjs/verify-seed.mjs run against PGlite
+# (@electric-sql/pglite, real Postgres compiled to WASM), not the live
+# Supabase project, so this workflow needs nothing configured in repo
+# secrets to be useful on every commit, including PRs from forks.
+#
+# What this does NOT run: the Supabase-backed proof suite (proof:phase1-4,
+# proof:bridge-auth, proof:support-tickets, etc.) — those hit the real,
+# shared Supabase project this codebase has been built against all along,
+# which is deliberately NOT something to run automatically on every push
+# (see that project's own "shared with another concurrent session, real
+# tenant data exists" discipline documented throughout apps/api/supabase/).
+# See supabase-proofs.yml for that suite, kept manually-triggered on
+# purpose.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Build (typecheck) all workspaces
+        run: npm run build
+
+      - name: Verify schema (RLS isolation, activation gate, REF/termo trigger, dashboard views)
+        run: node verify-schema.mjs 03-schema.sql
+
+      - name: Verify seed (real F13/F14 ITED test-protocol limits, activation gate satisfied for real)
+        run: node verify-seed.mjs 03-schema.sql seed.sql

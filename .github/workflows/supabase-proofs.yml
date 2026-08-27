@@ -1,0 +1,90 @@
+name: Supabase proof suite (manual)
+
+# Deliberately workflow_dispatch-only, NOT on push/PR — every proof script
+# this runs hits the real, live Supabase project this codebase has been
+# proven against all along, the SAME project apps/api/supabase/*.mjs's own
+# header comments repeatedly warn is shared with other concurrent work
+# (real tenants exist there: antenas-rex-sb, outro-instalador-sb,
+# fieldready-internal, as of when those comments were written — check the
+# project directly, don't trust that list as current). Running this
+# automatically on every push/PR (including PRs from forks, which can't be
+# trusted with real secrets anyway) is exactly the kind of "ran it twice
+# against a shared live project without thinking it through" mistake this
+# codebase's own history already contains once — see CLAUDE.md/git log
+# around verify-schema-supabase.mjs's destructive-reset guard. Trigger this
+# by hand (Actions tab -> this workflow -> "Run workflow") when you
+# actually want to prove the Supabase-native slice against production data
+# shapes, not on every commit.
+#
+# Every proof script this runs is already responsible for its own cleanup,
+# scoped to fixtures it creates itself (randomly-suffixed tenant ids) —
+# see each script's own file header for that discipline. This workflow
+# doesn't change that; it's the same scripts you'd run by hand locally.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   SUPABASE_PROJECT_REF
+#   SUPABASE_DB_PASSWORD
+#   SUPABASE_SERVICE_ROLE_KEY
+#   SUPABASE_ANON_KEY
+#   SUPABASE_DB_POOLER_HOST   -- NOT optional here, unlike local dev's own
+#     .env.example comment might suggest: GitHub-hosted runners have no
+#     IPv6 egress, and the direct db.<project-ref>.supabase.co connection
+#     is IPv6-only (HOSTING.md's own finding, confirmed against Render for
+#     the same reason) -- every proof script here will fail to connect at
+#     all without this secret set to the Supavisor pooler host from the
+#     Supabase dashboard (Project Settings -> Database -> Connect).
+# Optional:
+#   GOOGLE_PLACES_API_KEY -- proof:places skips itself gracefully if unset.
+#     If you do set it, remember it's IP-restricted (Google Cloud Console)
+#     to the production VPS's IP, not this runner's -- proof:places is
+#     designed to still pass either way (see that script's own comment on
+#     its two legitimate outcomes), it just won't exercise the successful-
+#     lookup branch from here.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  proofs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Install Playwright's Chromium (REF PDF generation, proof:phase3)
+        working-directory: apps/api
+        run: npx playwright install --with-deps chromium
+
+      # Written to a real .env file, not just step env vars, because every
+      # proof script's own npm script invokes `node --env-file=.env ...`
+      # (see apps/api/package.json) -- matching exactly how a human runs
+      # these locally, not a CI-only code path.
+      - name: Write apps/api/.env from repo secrets
+        working-directory: apps/api
+        run: |
+          cat > .env << 'ENVEOF'
+          SUPABASE_PROJECT_REF=${{ secrets.SUPABASE_PROJECT_REF }}
+          SUPABASE_DB_PASSWORD=${{ secrets.SUPABASE_DB_PASSWORD }}
+          SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_DB_POOLER_HOST=${{ secrets.SUPABASE_DB_POOLER_HOST }}
+          GOOGLE_PLACES_API_KEY=${{ secrets.GOOGLE_PLACES_API_KEY }}
+          ENVEOF
+
+      - run: npm run proof:phase1
+      - run: npm run proof:phase2
+      - run: npm run proof:phase3
+      - run: npm run proof:phase4
+      - run: npm run proof:bridge-auth
+      - run: npm run proof:tech-pairing
+      - run: npm run proof:field-flow
+      - run: npm run proof:platform-admin
+      - run: npm run proof:support-tickets
+      - run: npm run proof:admin-analytics
+      - run: npm run proof:places
+      - run: npm run smoke:web
