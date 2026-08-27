@@ -57,6 +57,7 @@ import {
 import { uploadPhoto } from "@/lib/api";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { Pill, jobStatusLabel, type PillTone } from "../../../_components/pill";
+import { ClientLinkButton } from "./client-link-button";
 import type { ChecklistItem, Readiness, ExecutionSnapshot, TestProtocolSnapshot, TestProtocolTest } from "../page";
 
 type Job = {
@@ -349,11 +350,14 @@ export function JobDetail({
                 : "Sem data agendada"}
             </div>
           </div>
-          <div className="text-right shrink-0">
-            <div className="text-xs text-zinc-500">Orçamentado</div>
-            <div className="text-sm font-mono tabular-nums font-medium">
-              {Number(job.quoted_hours).toFixed(1)} h · {eur(job.quoted_materials)}
+          <div className="text-right shrink-0 space-y-2">
+            <div>
+              <div className="text-xs text-zinc-500">Orçamentado</div>
+              <div className="text-sm font-mono tabular-nums font-medium">
+                {Number(job.quoted_hours).toFixed(1)} h · {eur(job.quoted_materials)}
+              </div>
             </div>
+            <ClientLinkButton jobId={job.id} />
           </div>
         </div>
 

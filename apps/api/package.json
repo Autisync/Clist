@@ -22,7 +22,8 @@
     "proof:places": "node --env-file=.env test/places-provider-proof.mjs",
     "proof:pickup-plan-real-job": "node --env-file=.env test/pickup-plan-real-job-proof.mjs",
     "proof:technician-analytics": "node --env-file=.env test/technician-analytics-proof.mjs",
-    "proof:photo-upload-real-job": "node --env-file=.env test/photo-upload-real-job-proof.mjs"
+    "proof:photo-upload-real-job": "node --env-file=.env test/photo-upload-real-job-proof.mjs",
+    "proof:client-portal": "node --env-file=.env test/client-portal-proof.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.5",

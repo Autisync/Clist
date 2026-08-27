@@ -561,6 +561,15 @@ create table job (
 
   completed_at        timestamptz,
   created_at          timestamptz not null default now(),
+
+  -- Client-facing portal (routes/track.ts, rpc_job_generate_client_link,
+  -- fn_track_job below) — an unguessable capability token, not a
+  -- password/account: whoever holds this uuid can see this ONE job's
+  -- status and photos, nothing else, no login. Null until an office user
+  -- deliberately generates one; a job never gets a token just by
+  -- existing. `unique` doubles as the index fn_track_job's lookup needs.
+  client_access_token uuid unique,
+
   unique (tenant_id, code),
   check (
     ited_classification not in ('out_of_scope', 'exempt')

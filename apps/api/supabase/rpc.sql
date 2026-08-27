@@ -1549,3 +1549,117 @@ grant execute on function rpc_technician_create(text, text) to authenticated;
 -- separate, later, and more novel — not something to fold into this
 -- slice's plain-CRUD RPCs. Technician pairing (apps/web's
 -- /office/technicians page) stays entirely Fastify-backed for now.
+
+-- ============================================================================
+-- Client-facing portal (product improvement, not a Phase exit criterion) —
+-- schema.sql's own comment on job.client_access_token explains the
+-- capability-token model. Two functions: one office-only (generate/fetch
+-- the token), one public (resolve a token into the job's status + photo
+-- list — routes/track.ts's own comment explains why photo BYTES stay a
+-- Fastify route even though this lookup doesn't need to be one).
+-- ============================================================================
+
+-- rpc_job_generate_client_link: SECURITY INVOKER — RLS's tenant_isolation
+-- on job is what actually restricts this to the caller's own tenant (no
+-- manual fn_current_tenant_id() check needed, unlike the RPCs above that
+-- write an attribution column RLS can't police on its own). What an RPC
+-- buys here is the atomic coalesce(client_access_token, gen_random_uuid())
+-- inside one UPDATE ... RETURNING — a client doing this as a separate
+-- SELECT-then-UPDATE could race two concurrent "gerar link" clicks on the
+-- same job into generating two different tokens, silently invalidating
+-- whichever one was already handed to a client.
+create or replace function rpc_job_generate_client_link(p_job_id uuid)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_token uuid;
+begin
+  update job
+  set client_access_token = coalesce(client_access_token, gen_random_uuid())
+  where id = p_job_id
+  returning client_access_token into v_token;
+
+  if not found then
+    return jsonb_build_object('kind', 'not_found');
+  end if;
+
+  return jsonb_build_object('kind', 'ok', 'token', v_token);
+end;
+$$;
+
+comment on function rpc_job_generate_client_link(uuid) is
+  'Office-facing half of the client portal — generates (or returns the '
+  'existing) capability token for one job. SECURITY INVOKER; see the '
+  'header comment above this function for why no RPC-level tenant check '
+  'is needed here, unlike this file''s attribution-writing RPCs.';
+
+revoke execute on function rpc_job_generate_client_link(uuid) from public;
+grant execute on function rpc_job_generate_client_link(uuid) to authenticated;
+
+-- fn_track_job: the PUBLIC half — SECURITY DEFINER, deliberately, and
+-- granted to `anon` (not `authenticated`): a client viewing this link has
+-- no Supabase session at all, by design (no login, no account to manage,
+-- same reasoning every other capability-URL system uses, e.g. a
+-- shareable Google Docs link). RLS on job would reject an anon caller
+-- outright (fn_current_tenant_id() resolves null for anon, and
+-- tenant_isolation's own `using (tenant_id = fn_current_tenant_id())`
+-- never matches null against a real tenant_id) — bypassing it here is
+-- safe ONLY because the token itself (a random uuid, unguessable, never
+-- enumerable) is the entire access-control mechanism, checked explicitly
+-- below, not "any anon caller can read any job" the way granting anon
+-- direct table access would be.
+--
+-- Returns ONLY the fields a client should ever see — never the full job
+-- row, never other tenants' data, never anything financial (quoted/
+-- actual_hours, quoted/actual_materials stay out on purpose; a client
+-- portal is a status page, not a billing statement). Photo metadata only
+-- (id/phase/taken_at) -- the actual bytes are served by a separate,
+-- equally token-gated Fastify route (routes/track.ts), never inlined here.
+create or replace function fn_track_job(p_token uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_job record;
+  v_photos jsonb;
+begin
+  select id, code, title, status, scheduled_at, created_at
+  into v_job
+  from job
+  where client_access_token = p_token;
+
+  if v_job.id is null then
+    return jsonb_build_object('kind', 'not_found');
+  end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'phase', p.phase, 'taken_at', p.taken_at) order by p.taken_at), '[]'::jsonb)
+  into v_photos
+  from job_photo p
+  where p.job_id = v_job.id;
+
+  return jsonb_build_object(
+    'kind', 'ok',
+    'code', v_job.code,
+    'title', v_job.title,
+    'status', v_job.status,
+    'scheduled_at', v_job.scheduled_at,
+    'photos', v_photos
+  );
+end;
+$$;
+
+comment on function fn_track_job(uuid) is
+  'Public half of the client portal. SECURITY DEFINER + granted to anon '
+  'is a deliberate, narrow exception to "elevated access is a design '
+  'smell" — same class of exception fn_current_tenant_id() already is, '
+  'justified here by the token itself being the entire access-control '
+  'mechanism (random, unguessable, checked explicitly against '
+  'job.client_access_token) rather than a caller identity RLS could '
+  'evaluate. Returns a fixed, deliberately narrow field list — never the '
+  'full job row, never anything financial.';
+
+revoke execute on function fn_track_job(uuid) from public;
+grant execute on function fn_track_job(uuid) to anon;
