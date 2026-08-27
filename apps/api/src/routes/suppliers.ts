@@ -24,8 +24,37 @@ import { withPublicSchema } from "../db.js";
 import { requireAuth } from "../auth/middleware.js";
 import { placesProvider, PlacesApiError, type PlacesRefreshResult } from "../places-provider.js";
 
+// Moderate, not strict — each call is a real, billed Google Places Text
+// Search request (or, without a real key, a free fixture lookup), and a
+// debounced autocomplete field can still fire several of these per second
+// while someone types. 20/minute per IP is generous for real typing
+// (the client itself already debounces, suppliers-client.tsx) while
+// bounding a runaway client or scripted abuse from burning API quota.
+const PLACES_SEARCH_RATE_LIMIT = { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } };
+
 export async function supplierRoutes(app: FastifyInstance): Promise<void> {
   app.addHook("preHandler", requireAuth);
+
+  // The automation half of the Google Places integration — architecture
+  // §6 originally only covered refresh() (known place_id -> address/
+  // phone/hours); this is what replaces the office user copy-pasting a
+  // place_id out of Google's own separate Place ID Finder tool by hand.
+  // A search failure degrades to an empty result list, not an error —
+  // same "uptime must not depend on a third-party vendor" shape
+  // refresh-places already established, and losing autocomplete
+  // suggestions is a much smaller failure than losing the whole form.
+  app.get<{ Querystring: { q?: string } }>("/suppliers/places-search", PLACES_SEARCH_RATE_LIMIT, async (req, reply) => {
+    const query = req.query.q?.trim() ?? "";
+    if (query.length < 3) return reply.send({ results: [] });
+    try {
+      const results = await placesProvider.search(query);
+      return reply.send({ results });
+    } catch (err) {
+      if (!(err instanceof PlacesApiError)) throw err; // a real bug, not a vendor failure — surface it normally
+      req.log?.warn?.({ err }, "places search failed; returning no suggestions");
+      return reply.send({ results: [] });
+    }
+  });
 
   app.get("/suppliers", async (req, reply) => {
     const rows = await withPublicSchema((db) =>

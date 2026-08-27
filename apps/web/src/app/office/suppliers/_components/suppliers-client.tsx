@@ -18,7 +18,7 @@
  * generation (08-supabase-native-migration.md §4).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   MapPin,
   RefreshCw,
@@ -30,6 +30,8 @@ import {
   XCircle,
   Loader2,
   Store,
+  Search,
+  X,
 } from "lucide-react";
 import { apiFetch, uploadReceipt, ApiError } from "@/lib/api";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -54,6 +56,8 @@ export type Supplier = {
 };
 
 export type CatalogItem = { id: string; sku: string; name: string; unit: string };
+
+type PlaceSearchResult = { place_id: string; name: string; address: string | null };
 
 type SupplierPrice = {
   id: string;
@@ -109,6 +113,66 @@ export function SuppliersClient({
   const [newPlaceId, setNewPlaceId] = useState("");
   const [creatingSupplier, setCreatingSupplier] = useState(false);
   const [createSupplierError, setCreateSupplierError] = useState<string | null>(null);
+
+  // Google Places search — the automation that replaces copy-pasting a
+  // place_id out of Google's own separate Place ID Finder tool by hand.
+  // Debounced (350ms) so a debounced-away keystroke never fires a real,
+  // billed Google API call for a query the user has already moved past —
+  // GET /suppliers/places-search's own rate limit is the server-side
+  // backstop for the same concern, this is what keeps normal typing well
+  // under it in the first place.
+  const [placeQuery, setPlaceQuery] = useState("");
+  const [placeResults, setPlaceResults] = useState<PlaceSearchResult[]>([]);
+  const [placeSearchLoading, setPlaceSearchLoading] = useState(false);
+  const [placeSearchOpen, setPlaceSearchOpen] = useState(false);
+  const [selectedPlace, setSelectedPlace] = useState<PlaceSearchResult | null>(null);
+  const placeSearchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (placeSearchDebounce.current) clearTimeout(placeSearchDebounce.current);
+    };
+  }, []);
+
+  function onPlaceQueryChange(value: string) {
+    setPlaceQuery(value);
+    setPlaceSearchOpen(true);
+    if (placeSearchDebounce.current) clearTimeout(placeSearchDebounce.current);
+    if (value.trim().length < 3) {
+      setPlaceResults([]);
+      setPlaceSearchLoading(false);
+      return;
+    }
+    setPlaceSearchLoading(true);
+    placeSearchDebounce.current = setTimeout(async () => {
+      try {
+        const res = await apiFetch<{ results: PlaceSearchResult[] }>(
+          `/suppliers/places-search?q=${encodeURIComponent(value.trim())}`
+        );
+        setPlaceResults(res.results);
+      } catch {
+        setPlaceResults([]);
+      } finally {
+        setPlaceSearchLoading(false);
+      }
+    }, 350);
+  }
+
+  function pickPlace(place: PlaceSearchResult) {
+    setSelectedPlace(place);
+    setNewPlaceId(place.place_id);
+    // Only fills in name/address if still empty — never overwrites
+    // something the office user already typed by hand.
+    setNewName((cur) => cur.trim() || place.name);
+    setNewAddress((cur) => cur.trim() || place.address || "");
+    setPlaceSearchOpen(false);
+    setPlaceQuery("");
+    setPlaceResults([]);
+  }
+
+  function clearSelectedPlace() {
+    setSelectedPlace(null);
+    setNewPlaceId("");
+  }
 
   const [prices, setPrices] = useState<SupplierPrice[]>([]);
   const [pricesLoading, setPricesLoading] = useState(true);
@@ -225,6 +289,9 @@ export function SuppliersClient({
       setNewAddress("");
       setNewPhone("");
       setNewPlaceId("");
+      setSelectedPlace(null);
+      setPlaceQuery("");
+      setPlaceResults([]);
     } catch {
       setCreateSupplierError("Não foi possível criar o fornecedor. Tente novamente.");
     } finally {
@@ -352,6 +419,66 @@ export function SuppliersClient({
 
       {showNewForm && (
         <form onSubmit={createSupplier} className="bg-white border border-zinc-200 rounded p-4 space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-zinc-600 mb-1">
+              Pesquisar no Google Places (opcional)
+            </label>
+            {selectedPlace ? (
+              <div className="flex items-center justify-between gap-2 rounded border border-cyan-300 bg-cyan-50 px-3 py-2 text-sm">
+                <div className="flex items-center gap-2 min-w-0">
+                  <CheckCircle2 className="w-4 h-4 text-cyan-700 shrink-0" />
+                  <span className="truncate text-cyan-900">{selectedPlace.name}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearSelectedPlace}
+                  className="text-cyan-700 hover:text-cyan-900 shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <div className="relative">
+                <div className="relative">
+                  <Search className="w-4 h-4 text-zinc-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={placeQuery}
+                    onChange={(e) => onPlaceQueryChange(e.target.value)}
+                    onFocus={() => setPlaceSearchOpen(true)}
+                    onBlur={() => setTimeout(() => setPlaceSearchOpen(false), 150)}
+                    placeholder="Nome ou morada do fornecedor…"
+                    className="w-full rounded border border-zinc-300 pl-9 pr-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:border-cyan-600"
+                  />
+                </div>
+                {placeSearchOpen && (placeSearchLoading || placeResults.length > 0) && (
+                  <div className="absolute z-10 mt-1 w-full rounded border border-zinc-200 bg-white shadow-lg max-h-56 overflow-auto">
+                    {placeSearchLoading ? (
+                      <div className="flex items-center gap-2 px-3 py-2 text-xs text-zinc-500">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" /> A procurar…
+                      </div>
+                    ) : (
+                      placeResults.map((r) => (
+                        <button
+                          key={r.place_id}
+                          type="button"
+                          onClick={() => pickPlace(r)}
+                          className="w-full text-left px-3 py-2 text-sm hover:bg-cyan-50 border-b border-zinc-100 last:border-0"
+                        >
+                          <div className="font-medium text-zinc-900">{r.name}</div>
+                          {r.address && <div className="text-xs text-zinc-500">{r.address}</div>}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            <p className="mt-1 text-xs text-zinc-400">
+              Preenche automaticamente nome e morada, e liga o fornecedor à sincronização de
+              horário/telefone do Google. Pode ignorar e preencher tudo manualmente abaixo.
+            </p>
+          </div>
           <div className="flex gap-2 flex-wrap">
             <input
               type="text"
@@ -383,15 +510,6 @@ export function SuppliersClient({
               onChange={(e) => setNewPhone(e.target.value)}
               placeholder="Telefone (opcional)"
               className="w-40 rounded border border-zinc-300 px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:border-cyan-600"
-            />
-          </div>
-          <div>
-            <input
-              type="text"
-              value={newPlaceId}
-              onChange={(e) => setNewPlaceId(e.target.value)}
-              placeholder="Google Place ID (opcional — permite sincronizar morada/horário)"
-              className="w-full rounded border border-zinc-300 px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:border-cyan-600"
             />
           </div>
           <div className="flex items-center justify-between">

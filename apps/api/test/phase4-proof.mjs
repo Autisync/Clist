@@ -451,6 +451,33 @@ async function main() {
     fail("sourcing: strictly ascending price order", JSON.stringify(prices));
   }
 
+  // ==== 3b. GET /suppliers/places-search — the autocomplete automation, ==
+  // ====     against FixturePlacesProvider (this proof strips
+  // ====     GOOGLE_PLACES_API_KEY, spawnServer's own comment) — the one
+  // ====     deterministic, always-run test of the fixture search path;
+  // ====     places-provider-proof.mjs's own search test only ever runs
+  // ====     against the real vendor, and skips itself entirely without a
+  // ====     real key configured.
+  {
+    const search = await officeA.get(`/suppliers/places-search?q=Rexel`);
+    const names = (search.json?.results ?? []).map((r) => r.name);
+    if (search.status === 200 && names.length === 1 && names[0] === "Rexel Alfragide") {
+      ok("places-search (fixture): substring match against the fixture's known suppliers returns exactly the matching one");
+    } else fail("places-search fixture match", search);
+  }
+  {
+    const noMatch = await officeA.get(`/suppliers/places-search?q=NoSuchSupplierXYZ`);
+    if (noMatch.status === 200 && Array.isArray(noMatch.json?.results) && noMatch.json.results.length === 0) {
+      ok("places-search (fixture): no match degrades to an empty result list, not an error");
+    } else fail("places-search fixture no-match", noMatch);
+  }
+  {
+    const tooShort = await officeA.get(`/suppliers/places-search?q=re`);
+    if (tooShort.status === 200 && Array.isArray(tooShort.json?.results) && tooShort.json.results.length === 0) {
+      ok("places-search (fixture): a query under 3 characters short-circuits to an empty result list");
+    } else fail("places-search fixture short-query short-circuit", tooShort);
+  }
+
   // ==== 4. GET /jobs/:id/pickup-plan — (coverage, open-now, price) tuple =
 
   const catPickupA = await createCatalogItemMirrored(officeA, "PICKUP-A", "Peça Pickup A");

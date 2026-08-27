@@ -18,8 +18,22 @@ export interface PlacesRefreshResult {
   phone: string | null;
 }
 
+export interface PlaceSearchResult {
+  place_id: string;
+  name: string;
+  address: string | null;
+}
+
 export interface PlacesProvider {
   refresh(placeId: string): Promise<PlacesRefreshResult>;
+  // Text search — "type a supplier name, get real candidate places back" —
+  // the automation this interface grew to support after refresh() alone
+  // still left office users copy-pasting a place_id out of Google's own
+  // separate Place ID Finder tool by hand. Same fixture/real split as
+  // refresh(): FixturePlacesProvider matches by substring against the same
+  // four demo suppliers FIXTURE_SUPPLIERS already knows, so local dev and
+  // every proof/smoke script exercise this deterministically too.
+  search(query: string): Promise<PlaceSearchResult[]>;
 }
 
 // One entry per day of the week, dow == JS Date#getDay() (0 = Sunday ..
@@ -65,6 +79,18 @@ const FIXTURE_SUPPLIERS: Record<string, PlacesRefreshResult> = {
   },
 };
 
+// Display names for the same four fixture suppliers, keyed the same way —
+// FIXTURE_SUPPLIERS itself never needed a name (refresh() doesn't return
+// one), search() does. Kept as a separate small map rather than widening
+// PlacesRefreshResult with an unused field real GooglePlacesProvider
+// callers would have to populate too.
+const FIXTURE_SUPPLIER_NAMES: Record<string, string> = {
+  ChIJ_mock_rexel_alf: "Rexel Alfragide",
+  ChIJ_mock_sonepar_pv: "Sonepar Prior Velho",
+  ChIJ_mock_antenas_amd: "Antenas Amadora",
+  ChIJ_mock_lm_alf: "Leroy Merlin Alfragide",
+};
+
 // Generic fallback for a place_id this fixture doesn't recognize — falls
 // back rather than throwing (07-phase4-cost-intelligence.md §3), same
 // spirit as receipt_line's "sem correspondência" null-item_id case: an
@@ -78,6 +104,14 @@ const GENERIC_FALLBACK: PlacesRefreshResult = {
 export class FixturePlacesProvider implements PlacesProvider {
   async refresh(placeId: string): Promise<PlacesRefreshResult> {
     return FIXTURE_SUPPLIERS[placeId] ?? GENERIC_FALLBACK;
+  }
+
+  async search(query: string): Promise<PlaceSearchResult[]> {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return Object.entries(FIXTURE_SUPPLIER_NAMES)
+      .filter(([, name]) => name.toLowerCase().includes(q))
+      .map(([place_id, name]) => ({ place_id, name, address: FIXTURE_SUPPLIERS[place_id]?.address ?? null }));
   }
 }
 
@@ -189,6 +223,54 @@ export class GooglePlacesProvider implements PlacesProvider {
       phone: json.internationalPhoneNumber ?? null,
       hours: normalizeOpeningHours(json.regularOpeningHours?.periods),
     };
+  }
+
+  async search(query: string): Promise<PlaceSearchResult[]> {
+    const q = query.trim();
+    if (!q) return [];
+
+    let res: Response;
+    try {
+      res = await fetch(`${PLACES_API_BASE}/places:searchText`, {
+        method: "POST",
+        headers: {
+          "X-Goog-Api-Key": this.apiKey,
+          "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress",
+          "content-type": "application/json",
+        },
+        // regionCode biases (doesn't restrict) results towards Portugal —
+        // every real supplier this app has seeded or seen so far is a PT
+        // address, and Text Search's own relevance ranking otherwise has
+        // no location signal to work from at all for a bare business name.
+        body: JSON.stringify({ textQuery: q, regionCode: "PT" }),
+      });
+    } catch (err) {
+      throw new PlacesApiError("Google Places API search request failed (network)", err);
+    }
+
+    if (!res.ok) {
+      throw new PlacesApiError(`Google Places API search returned ${res.status}`, await res.text().catch(() => undefined));
+    }
+
+    let json: { places?: { id?: string; displayName?: { text?: string }; formattedAddress?: string }[] };
+    try {
+      json = await res.json();
+    } catch (err) {
+      throw new PlacesApiError("Google Places API search returned a non-JSON response", err);
+    }
+
+    // Defensively filtered/coerced, same reasoning receipt-ocr-provider.ts's
+    // own normalizeVeryfiResponse comment gives for a third-party response
+    // shape this codebase doesn't control: a result missing an id is
+    // useless (nothing to refresh against later) and dropped rather than
+    // passed through with a hole in it.
+    return (json.places ?? [])
+      .filter((p): p is { id: string; displayName?: { text?: string }; formattedAddress?: string } => Boolean(p.id))
+      .map((p) => ({
+        place_id: p.id,
+        name: p.displayName?.text ?? p.formattedAddress ?? p.id,
+        address: p.formattedAddress ?? null,
+      }));
   }
 }
 

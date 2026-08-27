@@ -204,6 +204,28 @@ async function main() {
     if (refreshNoPlaceId.status === 422 && refreshNoPlaceId.json.error === "no_place_id") {
       ok("refresh-places on a supplier with no place_id still 422s (unaffected by the real-provider swap)");
     } else fail("no-place_id case unaffected", refreshNoPlaceId);
+
+    // GET /suppliers/places-search — the autocomplete automation. Real
+    // call to Google's Text Search API, same two-outcome shape as
+    // refresh-places above (IP-blocked here, would succeed from the VPS).
+    {
+      const search = await officeA.get(`/suppliers/places-search?q=Sydney+Opera+House`);
+      if (search.status !== 200) { fail("places-search returns 200 regardless of vendor outcome", search); }
+      else if (Array.isArray(search.json.results) && search.json.results.length === 0) {
+        ok("places-search outcome (a): vendor call failed (expected from a non-allow-listed IP) — degrades to an empty result list, no crash");
+        note("This does NOT prove a successful real search returns matches — re-run from the allow-listed IP to exercise that path for real.");
+      } else if (Array.isArray(search.json.results) && search.json.results.some((r) => r.name?.toLowerCase().includes("opera"))) {
+        ok(`places-search outcome (b): real successful Google Places search — ${search.json.results.length} result(s), including a real Sydney Opera House match`);
+      } else {
+        fail("places-search outcome matches one of the two expected shapes", search.json);
+      }
+    }
+    {
+      const tooShort = await officeA.get(`/suppliers/places-search?q=ab`);
+      if (tooShort.status === 200 && Array.isArray(tooShort.json.results) && tooShort.json.results.length === 0) {
+        ok("places-search: a query under 3 characters short-circuits to an empty result list without calling Google at all");
+      } else fail("places-search short-query short-circuit", tooShort);
+    }
   } finally {
     await killServerHard();
     rmSync(RUNTIME_DIR, { recursive: true, force: true });
