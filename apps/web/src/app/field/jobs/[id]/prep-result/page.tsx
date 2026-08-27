@@ -14,19 +14,26 @@
  * meaningless empty/green screen.
  *
  * The "Passar por" supplier-pickup card (07-phase4-cost-intelligence.md
- * §4, GET /jobs/:id/pickup-plan) is restored here now that the sourcing
- * API exists: when there are missing materials, fetch the job's pickup
- * plan and show its top recommendation — supplier name, address, open/
- * closed state, distance, "Levar-me lá" — matching
- * fieldready-prototype.jsx's prepresult screen (~line 1534) exactly. If no
- * supplier has a price on record for any missing item, the plan comes back
- * empty and the card says so honestly instead of showing nothing.
+ * §4, GET /jobs/:id/pickup-plan) is wired up for real now — it was
+ * disabled through the technician-auth migration because that route only
+ * ever worked against the classic system's own job id space, which this
+ * page's real, Supabase-native jobId could never match (this file's own
+ * prior comment on that). routes/jobs.ts now tries the real public.job
+ * table first and only falls back to the classic one, so a plain
+ * apiFetch call here works unchanged — no new endpoint, no client-side
+ * reimplementation of the ranking algorithm (apps/web/src/lib/sourcing.ts
+ * is deliberately display-only, see its own comment on why: one canonical
+ * ranking implementation, reached via the API, not two that could drift
+ * apart). If no supplier has a price on record for any missing item, the
+ * plan comes back empty and the card says so honestly instead of showing
+ * nothing.
  */
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { CheckCircle2, AlertTriangle, XCircle, Navigation, MapPin } from "lucide-react";
 import { BigButton } from "@/components/field/BigButton";
+import { apiFetch } from "@/lib/api";
 import { prepStorageKey, type PrepAnswerItem } from "../_lib/prep";
 
 type PickupPlanEntry = {
@@ -81,28 +88,29 @@ export default function PrepResultPage() {
     }
   }, [state.kind, jobId, router]);
 
-  // Supplier pickup plan — NOT ported in the technician-auth migration.
-  // GET /jobs/:id/pickup-plan (07-phase4-cost-intelligence.md §4) is the
-  // classic Fastify system's own route, reading `jobId` against the
-  // CLASSIC schema's own job table — a completely different id space from
-  // the Supabase-native `public.job` id this page now has (technician-auth
-  // migration, 08-supabase-native-migration.md §2), so it would 404 for
-  // every real call from here, always. Porting the full multi-supplier
-  // coverage/open-now/price ranking algorithm (domain/sourcing.ts's
-  // pickupPlan(), a real algorithm, not a simple filter) to a Supabase RPC
-  // is real, separate follow-up work, deliberately out of scope for
-  // getting the core technician loop (login/checklist/execution/tests/
-  // closeout) working end to end — apps/web/src/lib/dashboard.ts's
-  // sourcingOptionsFor() ported the simpler per-item case for the office
-  // dashboard; the multi-item pickup-plan optimization itself is still
-  // only proven against the classic system's own test fixtures
-  // (apps/api/test/phase4-proof.mjs). Left disabled rather than calling a
-  // route guaranteed to fail — pickupPlan starts and stays [], which the
-  // render below already treats as "no suggestions" (a real, pre-existing
-  // state, not a new failure mode this introduces).
+  // Supplier pickup plan — only worth fetching when there's actually
+  // something missing to pick up; the green "Pode arrancar" state never
+  // needs it. A failed fetch (network, unexpected shape) degrades to
+  // "no suggestions" (pickupPlan stays []), same as a genuinely empty
+  // plan — a missing pickup-plan suggestion is never worth blocking or
+  // erroring the readiness screen over.
   useEffect(() => {
-    setPickupPlan([]);
-  }, [state]);
+    if (state.kind !== "ready" || state.missing.length === 0) {
+      setPickupPlan([]);
+      return;
+    }
+    let cancelled = false;
+    apiFetch<{ plan: PickupPlanEntry[] }>(`/jobs/${jobId}/pickup-plan`)
+      .then((res) => {
+        if (!cancelled) setPickupPlan(res.plan);
+      })
+      .catch(() => {
+        if (!cancelled) setPickupPlan([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [state, jobId]);
 
   if (state.kind === "loading" || state.kind === "missing-data") {
     return <div className="h-full bg-white" />;

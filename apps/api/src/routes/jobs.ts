@@ -152,53 +152,73 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
   // currently-open desc, total price asc) -- domain/sourcing.ts's
   // pickupPlan, the prototype's pickupPlan (~line 718) ported exactly, not
   // approximated.
+  // The "missing items" SQL is identical in shape against either job
+  // table (job_checklist_item's own columns are the same in both
+  // schemas — schema.sql's own comment on §5 says these tables are
+  // "unchanged from 03-schema.sql"), just run against two different
+  // connections/schemas.
+  async function missingItemsFor(query: (sql: string, params: unknown[]) => Promise<{ rows: { id: string; label: string; item_id: string; qty: string }[] }>, jobId: string): Promise<MissingItem[]> {
+    const missingRows = await query(
+      `select id, label, item_id, qty
+       from job_checklist_item
+       where job_id = $1 and scope = 'job' and mandatory = true and status = 'missing'
+             and item_id is not null
+       order by label;`,
+      [jobId]
+    );
+    return missingRows.rows.map((row) => ({
+      checklist_item_id: row.id,
+      label: row.label,
+      item_id: row.item_id,
+      qty: Number(row.qty),
+    }));
+  }
+
   app.get<{ Params: { id: string } }>("/jobs/:id/pickup-plan", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
 
-    // Two connections, not one -- real bug, found and fixed the same
-    // session as suppliers.ts/catalog.ts/dashboard.ts's own versions of
-    // it: withTenant's connection runs as the `fieldready_app` role
-    // (SET LOCAL ROLE, db.ts), which has grants on this classic schema's
-    // OWN tables (job/job_checklist_item, read below) but none at all on
-    // public.* — domain/sourcing.ts's pickupPlan/sourcingOptions now
-    // unconditionally read public.supplier_price/public.supplier (this
-    // session's own fix, since that's where real prices/suppliers live),
-    // which a fieldready_app-scoped tx 500s on with "permission denied
-    // for table supplier_price", not a schema-qualification problem at
-    // all. withPublicSchema's connection has the access pickupPlan needs;
-    // the classic job/checklist lookup stays on withTenant unchanged.
-    const missing = await withTenant(tenantId, async (tx) => {
-      const jobRows = await tx.query(`select id from job where id = $1 and tenant_id = $2;`, [
-        req.params.id,
-        tenantId,
-      ]);
-      if (jobRows.rows.length === 0) return { kind: "not_found" as const };
+    // Tries the REAL, Supabase-native public.job first, falls back to the
+    // classic schema's own job table — real jobs (created via the
+    // Supabase-native job-creation flow, 08-supabase-native-migration.md
+    // §2) only ever exist in public.job; phase4-proof.mjs's own classic
+    // job-loop fixtures (still real, still worth proving) only ever exist
+    // in the classic schema. Both id spaces are UUIDs, indistinguishable
+    // by format alone, so "try the real one, fall back to the legacy
+    // one" is the only way one route can correctly serve both — same
+    // reasoning prep-result/page.tsx's own comment on this route gives
+    // for why it couldn't just call the classic-only version before this
+    // fix.
+    //
+    // withPublicSchema, not withTenant, for the real-job branch — same
+    // "fieldready_app role has no grant on public.*" reasoning
+    // suppliers.ts/catalog.ts/dashboard.ts's own fixes already
+    // established; the classic-job fallback branch keeps withTenant
+    // since job/job_checklist_item there are genuinely classic-schema
+    // concepts.
+    const realJob = await withPublicSchema((db) =>
+      db.query(`select id from public.job where id = $1 and tenant_id = $2;`, [req.params.id, tenantId])
+    );
 
-      const missingRows = await tx.query<{
-        id: string;
-        label: string;
-        item_id: string;
-        qty: string;
-      }>(
-        `select id, label, item_id, qty
-         from job_checklist_item
-         where job_id = $1 and scope = 'job' and mandatory = true and status = 'missing'
-               and item_id is not null
-         order by label;`,
-        [req.params.id]
+    let missingItems: MissingItem[];
+    if (realJob.rows.length > 0) {
+      missingItems = await withPublicSchema((db) =>
+        missingItemsFor((sql, params) => db.query(sql, params), req.params.id)
       );
+    } else {
+      const classic = await withTenant(tenantId, async (tx) => {
+        const jobRows = await tx.query(`select id from job where id = $1 and tenant_id = $2;`, [
+          req.params.id,
+          tenantId,
+        ]);
+        if (jobRows.rows.length === 0) return { kind: "not_found" as const };
+        const items = await missingItemsFor((sql, params) => tx.query(sql, params), req.params.id);
+        return { kind: "ok" as const, items };
+      });
+      if (classic.kind === "not_found") return reply.code(404).send({ error: "job_not_found" });
+      missingItems = classic.items;
+    }
 
-      const missingItems: MissingItem[] = missingRows.rows.map((row) => ({
-        checklist_item_id: row.id,
-        label: row.label,
-        item_id: row.item_id,
-        qty: Number(row.qty),
-      }));
-      return { kind: "ok" as const, missingItems };
-    });
-
-    if (missing.kind === "not_found") return reply.code(404).send({ error: "job_not_found" });
-    const plan = await withPublicSchema((db) => pickupPlan(db, tenantId, missing.missingItems));
+    const plan = await withPublicSchema((db) => pickupPlan(db, tenantId, missingItems));
     return reply.send({ plan });
   });
 
