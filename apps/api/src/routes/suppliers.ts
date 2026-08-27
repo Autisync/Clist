@@ -11,7 +11,7 @@ import {
 } from "@fieldready/core";
 import { withTenant } from "../db.js";
 import { requireAuth } from "../auth/middleware.js";
-import { placesProvider } from "../places-provider.js";
+import { placesProvider, PlacesApiError, type PlacesRefreshResult } from "../places-provider.js";
 
 export async function supplierRoutes(app: FastifyInstance): Promise<void> {
   app.addHook("preHandler", requireAuth);
@@ -92,25 +92,45 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // 07-phase4-cost-intelligence.md §3: pulls hours/address/phone from the
-  // configured PlacesProvider (fixture-backed in this environment, real
-  // Google Places at deploy time — places-provider.ts) and bumps synced_at,
-  // same "refresh from an external source of record" shape as any future
-  // real integration would have.
+  // configured PlacesProvider (fixture-backed without a real API key,
+  // real Google Places API (New) once GOOGLE_PLACES_API_KEY is set —
+  // places-provider.ts) and bumps synced_at, same "refresh from an
+  // external source of record" shape as any future real integration
+  // would have.
+  //
+  // Split into two withTenant calls (read, then write) with the Places
+  // call sandwiched in between OUTSIDE either transaction — a slow or
+  // failed third-party call must never hold a DB connection/transaction
+  // open, same reasoning as routes/receipts.ts's own OCR call being
+  // deliberately outside its withTenant block.
   app.post<{ Params: { id: string } }>("/suppliers/:id/refresh-places", async (req, reply) => {
     const tenantId = req.auth!.tenant_id;
 
-    const outcome = await withTenant(tenantId, async (tx) => {
-      const rows = await tx.query<{ id: string; place_id: string | null }>(
+    const found = await withTenant(tenantId, (tx) =>
+      tx.query<{ id: string; place_id: string | null }>(
         `select id, place_id from supplier where id = $1 and tenant_id = $2;`,
         [req.params.id, tenantId]
-      );
-      if (rows.rows.length === 0) return { kind: "not_found" as const };
-      const supplier = rows.rows[0];
-      if (!supplier.place_id) return { kind: "no_place_id" as const };
+      )
+    );
+    if (found.rows.length === 0) return reply.code(404).send({ error: "supplier_not_found" });
+    const supplier = found.rows[0];
+    if (!supplier.place_id)
+      return reply.code(422).send({
+        error: "no_place_id",
+        message: "This supplier has no place_id to refresh against.",
+      });
 
-      const refreshed = await placesProvider.refresh(supplier.place_id);
+    let refreshed: PlacesRefreshResult;
+    try {
+      refreshed = await placesProvider.refresh(supplier.place_id);
+    } catch (err) {
+      if (!(err instanceof PlacesApiError)) throw err; // a real bug, not a vendor failure — surface it normally
+      req.log?.warn?.({ err }, "places provider failed; leaving supplier address/phone/hours unchanged");
+      refreshed = { address: null, phone: null, hours: null };
+    }
 
-      const updated = await tx.query(
+    const updated = await withTenant(tenantId, (tx) =>
+      tx.query(
         `update supplier
          set address = coalesce($1, address),
              phone = coalesce($2, phone),
@@ -125,17 +145,9 @@ export async function supplierRoutes(app: FastifyInstance): Promise<void> {
           refreshed.hours !== null ? JSON.stringify(refreshed.hours) : null,
           supplier.id,
         ]
-      );
-      return { kind: "ok" as const, row: updated.rows[0] };
-    });
-
-    if (outcome.kind === "not_found") return reply.code(404).send({ error: "supplier_not_found" });
-    if (outcome.kind === "no_place_id")
-      return reply.code(422).send({
-        error: "no_place_id",
-        message: "This supplier has no place_id to refresh against.",
-      });
-    return reply.send(outcome.row);
+      )
+    );
+    return reply.send(updated.rows[0]);
   });
 
   app.get<{ Params: { id: string } }>("/suppliers/:id/prices", async (req, reply) => {

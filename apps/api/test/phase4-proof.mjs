@@ -113,6 +113,11 @@ function spawnServer() {
     delete env.VERYFI_CLIENT_SECRET;
     delete env.VERYFI_USERNAME;
     delete env.VERYFI_API_KEY;
+    // Same reasoning, same treatment, for the real Google Places key
+    // (places-provider.ts) now that one is configured in apps/api/.env --
+    // this proof must always exercise FixturePlacesProvider, never the
+    // real, network-dependent, IP-restricted vendor call.
+    delete env.GOOGLE_PLACES_API_KEY;
 
     const proc = spawn(
       process.execPath,

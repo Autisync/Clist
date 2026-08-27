@@ -81,7 +81,129 @@ export class FixturePlacesProvider implements PlacesProvider {
   }
 }
 
-// Real deployment: implement `PlacesProvider` against the actual Google
-// Places API (architecture §6) and swap the export below — every caller
-// (routes/suppliers.ts) depends only on the interface.
-export const placesProvider: PlacesProvider = new FixturePlacesProvider();
+// Real Google Places API (New) integration — architecture §6. Same
+// "credentials present -> real vendor, otherwise the fixture" selection
+// receipt-ocr-provider.ts already uses for Veryfi; provider selection
+// happens once below, at module load.
+//
+// Thrown by GooglePlacesProvider on any failure (network, timeout,
+// non-2xx other than 404, malformed response) — routes/suppliers.ts
+// catches this specifically and degrades to "no update, existing
+// address/phone/hours kept" rather than 500ing the whole request, same
+// "uptime must not depend on a third-party vendor" shape ReceiptOcrError
+// already established for receipt-ocr-provider.ts.
+export class PlacesApiError extends Error {
+  constructor(message: string, readonly cause?: unknown) {
+    super(message);
+    this.name = "PlacesApiError";
+  }
+}
+
+const PLACES_API_BASE = "https://places.googleapis.com/v1";
+// Minimal field mask — Places API (New) bills by which fields are
+// requested, so this asks for exactly the three refresh() promises
+// (address/phone/hours), nothing more.
+const FIELD_MASK = "formattedAddress,internationalPhoneNumber,regularOpeningHours";
+
+interface GooglePlacePoint {
+  day: number; // 0=Sunday..6=Saturday — same convention as JS Date#getDay(),
+  hour: number; // which is also SupplierHoursSlot.dow's own convention
+  minute: number; // (packages/core/src/supplier.ts) — no remapping needed.
+}
+interface GooglePeriod {
+  open?: GooglePlacePoint;
+  close?: GooglePlacePoint;
+}
+interface GooglePlaceDetailsResponse {
+  formattedAddress?: string;
+  internationalPhoneNumber?: string;
+  regularOpeningHours?: { periods?: GooglePeriod[] };
+}
+
+function toHHMM(hour: number, minute: number): string {
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+// Known, deliberate simplification: SupplierHoursSlot supports exactly one
+// open/close pair per day — no representation for split hours (closed for
+// lunch) or a close time past midnight into the next day. A place with
+// either of those reports only its FIRST period per day here. Fixing this
+// for real means widening SupplierHoursSlot itself (packages/core), not
+// something to paper over silently in this one provider — same "narrow
+// but honest" trade-off FIXTURE_SUPPLIERS' own Saturday-only special case
+// already made above.
+function normalizeOpeningHours(periods: GooglePeriod[] | undefined): SupplierHours | null {
+  if (!periods || periods.length === 0) return null;
+  const byDay = new Map<number, GooglePeriod>();
+  for (const p of periods) {
+    if (p.open === undefined || byDay.has(p.open.day)) continue;
+    byDay.set(p.open.day, p);
+  }
+  const week: SupplierHours = [];
+  for (let dow = 0; dow <= 6; dow++) {
+    const p = byDay.get(dow);
+    week.push(
+      p?.open && p.close
+        ? { dow, open: toHHMM(p.open.hour, p.open.minute), close: toHHMM(p.close.hour, p.close.minute) }
+        : null
+    );
+  }
+  return week;
+}
+
+export class GooglePlacesProvider implements PlacesProvider {
+  constructor(private readonly apiKey: string) {}
+
+  async refresh(placeId: string): Promise<PlacesRefreshResult> {
+    let res: Response;
+    try {
+      res = await fetch(`${PLACES_API_BASE}/places/${encodeURIComponent(placeId)}`, {
+        headers: { "X-Goog-Api-Key": this.apiKey, "X-Goog-FieldMask": FIELD_MASK },
+      });
+    } catch (err) {
+      throw new PlacesApiError("Google Places API request failed (network)", err);
+    }
+
+    if (res.status === 404) {
+      // A real, expected case, not a failure — a mock place_id
+      // (FIXTURE_SUPPLIERS' own ChIJ_mock_* keys, still seeded in demo
+      // data) or any supplier not yet given a real Google place_id will
+      // always 404 here. Degrades to "nothing to update" exactly like
+      // GENERIC_FALLBACK already does for the fixture provider's own
+      // unrecognized-key case, not an error.
+      return GENERIC_FALLBACK;
+    }
+    if (!res.ok) {
+      throw new PlacesApiError(`Google Places API returned ${res.status}`, await res.text().catch(() => undefined));
+    }
+
+    let json: GooglePlaceDetailsResponse;
+    try {
+      json = await res.json();
+    } catch (err) {
+      throw new PlacesApiError("Google Places API returned a non-JSON response", err);
+    }
+
+    return {
+      address: json.formattedAddress ?? null,
+      phone: json.internationalPhoneNumber ?? null,
+      hours: normalizeOpeningHours(json.regularOpeningHours?.periods),
+    };
+  }
+}
+
+// Provider selection — real Google Places only when a key is genuinely
+// configured; the fixture otherwise. Read once at module load, not
+// per-request, same reasoning as receipt-ocr-provider.ts's own
+// loadVeryfiCredentials(). Proof/smoke scripts must never accidentally
+// pick up a real key from the host environment — test/phase4-proof.mjs's
+// spawnServer() strips GOOGLE_PLACES_API_KEY from the child process's env
+// for exactly this reason, mirroring its existing VERYFI_* stripping.
+function loadGooglePlacesApiKey(): string | null {
+  return process.env.GOOGLE_PLACES_API_KEY || null;
+}
+
+const googlePlacesApiKey = loadGooglePlacesApiKey();
+export const placesProvider: PlacesProvider = googlePlacesApiKey
+  ? new GooglePlacesProvider(googlePlacesApiKey)
+  : new FixturePlacesProvider();

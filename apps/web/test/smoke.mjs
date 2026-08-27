@@ -93,6 +93,9 @@ function spawnApi() {
     delete env.VERYFI_CLIENT_SECRET;
     delete env.VERYFI_USERNAME;
     delete env.VERYFI_API_KEY;
+    // Same treatment for the real Google Places key (places-provider.ts)
+    // now that one is configured in apps/api/.env.
+    delete env.GOOGLE_PLACES_API_KEY;
 
     const proc = spawn(
       process.execPath,
