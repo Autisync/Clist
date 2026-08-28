@@ -63,3 +63,17 @@ services:
         sync: false
       - key: VERYFI_API_KEY
         sync: false
+      # Optional — Google Places API (New), for supplier address/hours
+      # refresh and the create-supplier search-as-you-type autocomplete
+      # (places-provider.ts). Leave unset to keep using
+      # FixturePlacesProvider, which only recognizes 4 hardcoded demo
+      # supplier names — a real supplier search returning nothing is the
+      # exact symptom of this being unset, not a bug in the search code
+      # itself. This key was missing from this file for a while after it
+      # was first added to apps/api/.env.example, which meant setting it
+      # in Render's dashboard for an *existing* service still worked (env
+      # vars set there apply regardless of render.yaml), but a fresh
+      # Blueprint deploy would never have prompted for it — added here so
+      # it does.
+      - key: GOOGLE_PLACES_API_KEY
+        sync: false

@@ -250,6 +250,7 @@ be). Confirmed resolving correctly before relying on it.
 | `FIELDREADY_RUNTIME_DIR` | Point this at your persistent disk's mount path (§3 above). |
 | `HOST_DOMAIN` | Portainer/Traefik setup only — the real hostname Traefik routes to this service (e.g. a sslip.io hostname, or a real domain). Not used by Render, which handles its own domain/TLS. |
 | `VERYFI_CLIENT_ID` / `VERYFI_CLIENT_SECRET` / `VERYFI_USERNAME` / `VERYFI_API_KEY` | Optional — all four unset keeps using the deterministic fixture OCR provider. |
+| `GOOGLE_PLACES_API_KEY` | Optional — unset keeps using `FixturePlacesProvider` (4 hardcoded demo supplier names only). A real supplier not showing up in the create-supplier search is the exact symptom of this var not actually reaching the running container. For the Portainer/Compose path this variable must be explicitly listed under `environment:` in `portainer-stack.yml` (not just set in Portainer's env var UI) for Compose to pass it through at all — a real, previously-missing case, now fixed there. |
 
 `FASTIFY_DB_SCHEMA` is optional and best left unset in production (defaults
 to `fastify_api`) — only override it to run a second, fully separate copy

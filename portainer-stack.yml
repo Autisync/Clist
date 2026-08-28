@@ -148,6 +148,25 @@ services:
       - VERYFI_CLIENT_SECRET
       - VERYFI_USERNAME
       - VERYFI_API_KEY
+      # Optional -- Google Places API (New), for supplier address/hours
+      # refresh and the create-supplier search-as-you-type autocomplete
+      # (places-provider.ts). Leave unset (or unset in Portainer's own
+      # "Environment variables" section) to keep using
+      # FixturePlacesProvider, which only recognizes 4 hardcoded demo
+      # supplier names -- a real supplier search silently returning
+      # nothing in production is the exact symptom of this var never
+      # actually reaching the container, not a bug in the search code
+      # itself. IMPORTANT, unlike Render: this line being present here is
+      # NOT optional for Docker Compose the way it is for Render's
+      # dashboard -- Compose only passes through a host/Portainer env var
+      # whose name is explicitly listed under `environment:` below. Setting
+      # GOOGLE_PLACES_API_KEY in Portainer's env var UI does nothing at all
+      # for the running container unless this exact line exists in the
+      # compose file Portainer is actually deploying from, AND the stack
+      # has been redeployed/updated after adding it -- this was missing
+      # here for a while, which is a real, confirmed way for a correctly-
+      # configured key to still never reach the running process.
+      - GOOGLE_PLACES_API_KEY
     volumes:
       - fieldready-api-objects:/data
     healthcheck:
