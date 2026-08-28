@@ -1,8 +1,10 @@
 /*
  * Terms of Service — production-readiness item 5, sibling to
- * privacy/page.tsx. Same placeholder discipline: bracketed fields are
- * left for the company owner to fill in with real legal/registration
- * details, never invented.
+ * privacy/page.tsx. Contact/ownership details confirmed directly by the
+ * company owner (see that file's own comment for the NIF-vs-NIPC/Angola-
+ * registration reasoning); no SLA and no named forum/jurisdiction beyond
+ * "lei portuguesa" per the owner's own choice to leave both unnamed
+ * rather than commit to either.
  */
 
 import Link from "next/link";
@@ -20,7 +22,7 @@ export default function TermsPage() {
         </Link>
 
         <h1 className="text-xl font-semibold">Termos de Serviço</h1>
-        <p className="text-sm text-zinc-500 mt-1">Última atualização: [data]</p>
+        <p className="text-sm text-zinc-500 mt-1">Última atualização: 28 de agosto de 2026</p>
 
         <p className="mt-6 text-sm leading-relaxed text-zinc-700">
           Estes termos regulam o acesso e utilização do FieldReady por parte da sua empresa
@@ -67,8 +69,9 @@ export default function TermsPage() {
         <p className="text-sm text-zinc-700">
           O FieldReady depende de serviços de terceiros (base de dados, alojamento,
           sincronização de fornecedores) para funcionar. Fazemos um esforço razoável para
-          manter o serviço disponível, mas não garantimos disponibilidade ininterrupta.
-          [Confirmar se aplicável um SLA/nível de suporte contratual específico.]
+          manter o serviço disponível, mas não garantimos disponibilidade ininterrupta,
+          nem qualquer nível de serviço (SLA) específico, salvo acordo escrito em
+          contrário.
         </p>
 
         <h2 className={H2_CLASS}>5. Alterações a estes termos</h2>
@@ -79,17 +82,20 @@ export default function TermsPage() {
 
         <h2 className={H2_CLASS}>6. Lei aplicável</h2>
         <p className="text-sm text-zinc-700">
-          Estes termos regem-se pela lei portuguesa. [Confirmar foro/jurisdição contratual
-          preferida, se aplicável.]
+          Estes termos regem-se pela lei portuguesa.
         </p>
 
         <h2 className={H2_CLASS}>7. Contacto</h2>
         <p className="text-sm text-zinc-700">
-          Questões sobre estes termos: [email de contacto]. Para questões de suporte ao
+          Questões sobre estes termos: info@autisync.com. Para questões de suporte ao
           produto, use o formulário de Suporte dentro da aplicação.
         </p>
 
-        <div className="mt-10 pt-6 border-t border-zinc-200 text-xs text-zinc-400">
+        <div className="mt-10 pt-6 border-t border-zinc-200 text-xs text-zinc-400 space-y-2">
+          <p>
+            FieldReady é propriedade da Autisync e é operado diretamente pela Autisync
+            (MAHELDOM CONSULTING, LDA).
+          </p>
           <Link href="/privacy" className="hover:text-zinc-600 underline">
             Política de Privacidade
           </Link>

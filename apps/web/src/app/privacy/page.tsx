@@ -1,12 +1,20 @@
 /*
- * Privacy Policy — production-readiness item 5. Content is real and
- * GDPR-structured (controller identity, purposes/legal basis, retention,
- * data subject rights, sub-processors, cookies/analytics disclosure,
- * contact), but the bracketed [placeholders] are NOT filled with
- * invented company details — that would be worse than leaving them
- * blank, since a fabricated NIPC/address reads as real. Whoever owns
- * this company must fill those in before this page is genuinely
- * compliant; the structure and substance around them is complete.
+ * Privacy Policy — production-readiness item 5. GDPR-structured
+ * (controller identity, purposes/legal basis, retention, data subject
+ * rights, sub-processors, cookies/analytics disclosure, contact).
+ *
+ * Controller identity: MAHELDOM CONSULTING, LDA (trading as Autisync),
+ * NIF 5003472418, registered in Luanda, Angola — confirmed directly by
+ * the company owner, not invented. Labelled "NIF" rather than "NIPC"
+ * deliberately: NIPC specifically denotes a Portugal-registered entity's
+ * tax number (always 9 digits), which this isn't (a 10-digit number,
+ * matching Angola's AGT-issued NIF format instead) — using "NIPC" here
+ * would misstate where the controller is actually registered, even
+ * though the service itself targets Portuguese telecom installers under
+ * Portuguese RGPD/CNPD and ITED regulation. Veryfi is listed as not yet
+ * active per the owner's own confirmation (still the fixture-backed
+ * stub apps/api/README.md describes) — update this section the day real
+ * Veryfi credentials go live in production.
  *
  * Portuguese, matching the rest of this app's locale (its actual
  * audience — Portuguese telecom installers — not an English-first
@@ -29,7 +37,7 @@ export default function PrivacyPage() {
         </Link>
 
         <h1 className="text-xl font-semibold">Política de Privacidade</h1>
-        <p className="text-sm text-zinc-500 mt-1">Última atualização: [data]</p>
+        <p className="text-sm text-zinc-500 mt-1">Última atualização: 28 de agosto de 2026</p>
 
         <div className="mt-6 text-sm leading-relaxed text-zinc-700 space-y-1">
           <p>
@@ -42,9 +50,10 @@ export default function PrivacyPage() {
         <h2 className={H2_CLASS}>1. Quem é o responsável pelo tratamento</h2>
         <div className={SECTION_CLASS}>
           <p className="text-sm text-zinc-700">
-            [Nome legal da empresa], com sede em [morada da sede], NIPC [número], é a
-            responsável pelo tratamento dos dados pessoais descritos nesta política.
-            Contacto para assuntos de proteção de dados: [email de contacto/DPO].
+            MAHELDOM CONSULTING, LDA (nome comercial: Autisync), com sede em Rua Lar do
+            Patriota, Edifício do Shopping Jardim do Patriota, Patriota, Luanda, Angola,
+            NIF 5003472418, é a responsável pelo tratamento dos dados pessoais descritos
+            nesta política. Contacto para assuntos de proteção de dados: info@autisync.com.
           </p>
         </div>
 
@@ -104,8 +113,9 @@ export default function PrivacyPage() {
             Os dados são conservados enquanto a conta da sua empresa estiver ativa, e depois
             pelo período exigido por lei para registos de conformidade ITED (documentação
             técnica e termos de responsabilidade têm prazos de conservação próprios definidos
-            no Manual ITED / DL 123/2009). Após esse período, os dados são eliminados ou
-            anonimizados. [Confirmar prazo exato de conservação após encerramento de conta.]
+            no Manual ITED / DL 123/2009). Terminado esse período de conservação
+            obrigatória, os dados são eliminados ou anonimizados num prazo razoável a
+            partir do encerramento da conta ou de um pedido nesse sentido.
           </p>
         </div>
 
@@ -124,8 +134,9 @@ export default function PrivacyPage() {
               de fornecedores e análise de utilização.
             </li>
             <li>
-              <strong>Veryfi</strong> [confirmar se ativo] — leitura automática (OCR) de
-              recibos de fornecedores, quando configurado.
+              <strong>Veryfi</strong> — leitura automática (OCR) de recibos de
+              fornecedores. Ainda não está ativo em produção; esta secção será
+              atualizada quando entrar em funcionamento.
             </li>
           </ul>
         </div>
@@ -154,7 +165,7 @@ export default function PrivacyPage() {
           <p className="text-sm text-zinc-700">
             Tem direito a aceder, corrigir, apagar, limitar ou opor-se ao tratamento dos seus
             dados pessoais, e a portabilidade dos mesmos. Para exercer estes direitos,
-            contacte [email de contacto/DPO]. Tem também o direito de apresentar reclamação à
+            contacte info@autisync.com. Tem também o direito de apresentar reclamação à
             Comissão Nacional de Proteção de Dados (CNPD).
           </p>
         </div>
@@ -162,12 +173,16 @@ export default function PrivacyPage() {
         <h2 className={H2_CLASS}>8. Contacto</h2>
         <div className={SECTION_CLASS}>
           <p className="text-sm text-zinc-700">
-            Questões sobre esta política: [email de contacto]. Para questões de suporte ao
+            Questões sobre esta política: info@autisync.com. Para questões de suporte ao
             produto, use o formulário de Suporte dentro da aplicação.
           </p>
         </div>
 
-        <div className="mt-10 pt-6 border-t border-zinc-200 text-xs text-zinc-400">
+        <div className="mt-10 pt-6 border-t border-zinc-200 text-xs text-zinc-400 space-y-2">
+          <p>
+            FieldReady é propriedade da Autisync e é operado diretamente pela Autisync
+            (MAHELDOM CONSULTING, LDA).
+          </p>
           <Link href="/terms" className="hover:text-zinc-600 underline">
             Termos de Serviço
           </Link>
