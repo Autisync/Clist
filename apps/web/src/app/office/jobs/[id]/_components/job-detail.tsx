@@ -358,6 +358,15 @@ export function JobDetail({
               </div>
             </div>
             <ClientLinkButton jobId={job.id} />
+            <a
+              href={`/office/jobs/${job.id}/cost-summary`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-end gap-1.5 px-2.5 py-1.5 text-xs font-medium text-zinc-600 border border-zinc-300 rounded hover:bg-zinc-50"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Resumo de custos
+            </a>
           </div>
         </div>
 
