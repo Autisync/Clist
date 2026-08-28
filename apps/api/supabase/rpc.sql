@@ -1663,3 +1663,129 @@ comment on function fn_track_job(uuid) is
 
 revoke execute on function fn_track_job(uuid) from public;
 grant execute on function fn_track_job(uuid) to anon;
+
+-- ============================================================================
+-- Cross-tenant "system price update" — product improvement. Two different
+-- tenants can both buy the same real-world item from the same real-world
+-- supplier (a hardware wholesaler chain, say) without knowing about each
+-- other at all — supplier and catalog_item are both per-tenant rows with
+-- no shared id. Matching "the same supplier" and "the same product" across
+-- tenants therefore has to go through the two identity signals that
+-- happen to already exist and mean the same real-world thing regardless
+-- of which tenant recorded them:
+--   - supplier.place_id — a real Google Places id (places-provider.ts).
+--     Only ever compared when BOTH sides have one; two suppliers that
+--     both left place_id null are never treated as "the same supplier"
+--     just because they're both null.
+--   - catalog_item.name, case-insensitive/trimmed — no shared SKU/barcode
+--     exists anywhere in this schema (catalog_item.sku is unique only
+--     within a tenant), so name is the only signal available. Same
+--     "fuzzy but honest" precedent this codebase already set for
+--     receipt-line matching (receipts.ts's own "matched lines by
+--     case-insensitive name/SKU" comment) — not a new, lower bar.
+--
+-- security definer is required (not merely convenient) here: the whole
+-- point is reading price data belonging to a tenant OTHER than the
+-- caller's own, which no RLS policy on supplier_price ever permits or
+-- should. The privacy trade-off this makes deliberately: a confirmed
+-- price any tenant records for a real-world (supplier, item) pair joins
+-- an implicit, anonymized cross-tenant pool every other tenant buying
+-- the same thing from the same place can benefit from — attributed only
+-- as "the system" (fn_supplier_price_system_updates never selects the
+-- other side's tenant_id, app_user, supplier name/address, or receipt_id
+-- into its result — only a price and a timestamp), never surfaced as
+-- "tenant X" or any other identifying detail, and never applied to the
+-- caller's own supplier_price automatically — same "suggest, never
+-- auto-write across a tenant boundary" shape v_price_alerts already
+-- established for same-tenant price-rise alerts. There is currently no
+-- per-tenant opt-out of contributing to this pool; every tenant's own
+-- confirmed manual/receipt prices participate by default.
+create or replace function fn_supplier_price_system_updates(p_supplier_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_tenant_id uuid;
+  v_place_id  text;
+  v_updates   jsonb;
+begin
+  v_tenant_id := fn_current_tenant_id();
+  if v_tenant_id is null then
+    raise exception 'fn_supplier_price_system_updates: no tenant context resolved for this session';
+  end if;
+
+  -- Ownership check done explicitly, by hand -- security definer bypasses
+  -- RLS entirely, so nothing stops a caller from passing an arbitrary
+  -- uuid here unless this function refuses to look past its own tenant's
+  -- row for it, the same "explicit tenant_id check replaces what RLS
+  -- would otherwise provide" reasoning withPublicSchema's own routes use.
+  select place_id into v_place_id
+  from supplier
+  where id = p_supplier_id and tenant_id = v_tenant_id;
+
+  if v_place_id is null then
+    -- Not this tenant's supplier at all, or a real supplier with no
+    -- place_id yet -- either way there is no real-world identity to
+    -- match another tenant's supplier against, so there is nothing to
+    -- compare.
+    return jsonb_build_object('kind', 'ok', 'updates', '[]'::jsonb);
+  end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+           'item_id', mine.item_id,
+           'system_price', other.price,
+           'system_effective_at', other.effective_at
+         )), '[]'::jsonb)
+  into v_updates
+  from (
+    -- This tenant's own current (most recent) price per item at this
+    -- supplier -- exactly the "current price" suppliers-client.tsx's own
+    -- price table already shows.
+    select distinct on (sp.item_id) sp.item_id, sp.price, sp.effective_at, ci.name as item_name
+    from supplier_price sp
+    join catalog_item ci on ci.id = sp.item_id
+    where sp.tenant_id = v_tenant_id and sp.supplier_id = p_supplier_id
+    order by sp.item_id, sp.effective_at desc
+  ) mine
+  cross join lateral (
+    -- The single most recent OTHER tenant's confirmed price for a
+    -- supplier sharing this exact place_id and an item matched by
+    -- normalized name -- only surfaced when it is BOTH newer than this
+    -- tenant's own current price AND actually different from it (a
+    -- match that is older, or identical, is not "an update").
+    select osp.price, osp.effective_at
+    from supplier_price osp
+    join supplier os on os.id = osp.supplier_id
+    join catalog_item oci on oci.id = osp.item_id
+    where os.place_id = v_place_id
+      and os.tenant_id <> v_tenant_id
+      and lower(trim(oci.name)) = lower(trim(mine.item_name))
+      and osp.effective_at > mine.effective_at
+      and osp.price <> mine.price
+    order by osp.effective_at desc
+    limit 1
+  ) other;
+
+  return jsonb_build_object('kind', 'ok', 'updates', v_updates);
+end;
+$$;
+
+-- `revoke ... from public` alone is not enough on a Supabase project:
+-- this project's own default privileges on the public schema grant
+-- EXECUTE on every new function to anon/authenticated/service_role
+-- directly (confirmed live — information_schema.role_routine_grants
+-- showed `anon` with EXECUTE immediately after this function's first
+-- `create`, despite the `from public` revoke below), which is a
+-- separate grant `revoke ... from public` does not touch. Unlike
+-- fn_track_job (deliberately anon-reachable, the token IS the access
+-- control), this function has no such token and must never be callable
+-- without a real session — fn_current_tenant_id() already returns null
+-- for an anon caller and the function raises on that, so this was never
+-- actually exploitable, but leaving a real grant in place and relying
+-- solely on that runtime check is exactly the kind of latent risk this
+-- explicit revoke is worth the extra line to close outright.
+revoke execute on function fn_supplier_price_system_updates(uuid) from public;
+revoke execute on function fn_supplier_price_system_updates(uuid) from anon;
+grant execute on function fn_supplier_price_system_updates(uuid) to authenticated;

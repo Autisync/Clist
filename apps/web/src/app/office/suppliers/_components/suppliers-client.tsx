@@ -18,7 +18,7 @@
  * generation (08-supabase-native-migration.md §4).
  */
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   MapPin,
   RefreshCw,
@@ -32,6 +32,7 @@ import {
   Store,
   Search,
   X,
+  Sparkles,
 } from "lucide-react";
 import { apiFetch, uploadReceipt, ApiError } from "@/lib/api";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -177,6 +178,58 @@ export function SuppliersClient({
   const [prices, setPrices] = useState<SupplierPrice[]>([]);
   const [pricesLoading, setPricesLoading] = useState(true);
 
+  // Cross-tenant "system price update" — fn_supplier_price_system_updates
+  // (rpc.sql). Keyed by item_id so the price table below can look one up
+  // per row in O(1). Deliberately a *separate* small map, not merged into
+  // `prices` itself: this is a suggestion from outside this tenant's own
+  // data, never applied automatically (same "advisory, not automatic"
+  // shape v_price_alerts already established for same-tenant price-rise
+  // alerts) — keeping it a distinct piece of state makes "apply it" an
+  // explicit action (applySystemUpdate below) rather than something that
+  // could be mistaken for this tenant's own recorded price.
+  const [systemUpdates, setSystemUpdates] = useState<Map<string, { price: number; effectiveAt: string }>>(new Map());
+  const [applyingSystemUpdateFor, setApplyingSystemUpdateFor] = useState<string | null>(null);
+
+  async function loadSystemUpdates(supplierId: string) {
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc("fn_supplier_price_system_updates", { p_supplier_id: supplierId });
+      if (error) throw error;
+      const updates: { item_id: string; system_price: number; system_effective_at: string }[] =
+        data?.kind === "ok" ? data.updates : [];
+      setSystemUpdates(new Map(updates.map((u) => [u.item_id, { price: Number(u.system_price), effectiveAt: u.system_effective_at }])));
+    } catch {
+      // A failure here should never block the tenant's own price table
+      // from rendering — this is a bonus signal on top of it, not a
+      // dependency.
+      setSystemUpdates(new Map());
+    }
+  }
+
+  // Applies a suggested system price exactly the way a manual price entry
+  // already works (same RPC, same "current price + prev_price" update-in-
+  // place semantics) — never a separate write path, so this can never
+  // diverge from what a human typing the same number by hand would do.
+  async function applySystemUpdate(itemId: string, price: number) {
+    setApplyingSystemUpdateFor(itemId);
+    try {
+      const supabase = createSupabaseBrowserClient();
+      const { data, error } = await supabase.rpc("rpc_supplier_price_record", {
+        p_supplier_id: selected.id,
+        p_item_id: itemId,
+        p_price: price,
+      });
+      if (error) throw error;
+      if (data?.kind !== "ok") throw new Error(data?.kind ?? "unknown_error");
+      await Promise.all([loadPrices(selected.id), loadSystemUpdates(selected.id)]);
+    } catch {
+      // Silent — the badge simply stays visible so the office user can
+      // retry; no separate error slot exists for this secondary action.
+    } finally {
+      setApplyingSystemUpdateFor(null);
+    }
+  }
+
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
@@ -245,6 +298,7 @@ export function SuppliersClient({
   useEffect(() => {
     if (!selectedId) return; // zero suppliers yet — nothing to load
     void loadPrices(selectedId);
+    void loadSystemUpdates(selectedId);
     // Selecting a different supplier clears any in-progress receipt review
     // — a scan is scoped to the supplier it was uploaded for.
     setReceipt(null);
@@ -331,7 +385,7 @@ export function SuppliersClient({
       if (data.kind !== "ok") throw new Error(data.kind);
       setAddItemId("");
       setAddPrice("");
-      await loadPrices(selected.id);
+      await Promise.all([loadPrices(selected.id), loadSystemUpdates(selected.id)]);
     } catch {
       setAddError("Não foi possível guardar o preço. Verifique o valor.");
     } finally {
@@ -651,8 +705,10 @@ export function SuppliersClient({
                   {prices.map((p) => {
                     const prev = p.prev_price !== null ? Number(p.prev_price) : null;
                     const d = prev ? ((Number(p.price) - prev) / prev) * 100 : 0;
+                    const systemUpdate = systemUpdates.get(p.item_id);
                     return (
-                      <tr key={p.id} className="border-b border-zinc-100">
+                      <Fragment key={p.id}>
+                      <tr className={systemUpdate ? "border-zinc-100" : "border-b border-zinc-100"}>
                         <td className="py-1.5 pr-2">{p.item_name}</td>
                         <td className="pr-2 font-mono text-zinc-500">{p.item_sku}</td>
                         <td className="pr-2 font-mono tabular-nums font-medium">{eur(p.price)}</td>
@@ -675,6 +731,36 @@ export function SuppliersClient({
                           {new Date(p.effective_at).toLocaleDateString("pt-PT")}
                         </td>
                       </tr>
+                      {systemUpdate && (
+                        // Cross-tenant "system price update" —
+                        // fn_supplier_price_system_updates. Deliberately
+                        // attributed to "o sistema", never to another
+                        // tenant/company — see rpc.sql's own comment on
+                        // why that attribution is a hard requirement, not
+                        // a copy choice. Purely a suggestion: applying it
+                        // goes through the exact same manual-entry RPC a
+                        // human typing this number by hand would use.
+                        <tr key={`${p.id}-system-update`} className="border-b border-zinc-100 bg-amber-50/60">
+                          <td colSpan={6} className="py-1.5 px-2">
+                            <div className="flex items-center gap-2 text-amber-800">
+                              <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                              <span>
+                                Atualização de preço do sistema: <strong className="font-mono">{eur(systemUpdate.price)}</strong>{" "}
+                                (confirmado em {new Date(systemUpdate.effectiveAt).toLocaleDateString("pt-PT")} por outro utilizador deste fornecedor)
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => applySystemUpdate(p.item_id, systemUpdate.price)}
+                                disabled={applyingSystemUpdateFor === p.item_id}
+                                className="ml-auto shrink-0 px-2 py-1 text-[11px] font-medium text-amber-900 border border-amber-300 rounded hover:bg-amber-100 disabled:opacity-50"
+                              >
+                                {applyingSystemUpdateFor === p.item_id ? "A aplicar…" : "Aplicar"}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </Fragment>
                     );
                   })}
                 </tbody>

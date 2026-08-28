@@ -26,6 +26,7 @@
     "proof:technician-analytics": "npm run proof:technician-analytics --workspace=apps/api",
     "proof:photo-upload-real-job": "npm run proof:photo-upload-real-job --workspace=apps/api",
     "proof:client-portal": "npm run proof:client-portal --workspace=apps/api",
+    "proof:supplier-price-system-update": "npm run proof:supplier-price-system-update --workspace=apps/api",
     "smoke:web": "node --env-file=apps/api/.env apps/web/test/smoke.mjs",
     "verify:schema": "node verify-schema.mjs 03-schema.sql",
     "verify:seed": "node verify-seed.mjs 03-schema.sql seed.sql",
